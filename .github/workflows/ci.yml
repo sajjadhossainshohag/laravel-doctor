@@ -39,6 +39,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          rm -f composer.lock
           composer require "illuminate/console:^${{ matrix.laravel.version }}.0" "illuminate/contracts:^${{ matrix.laravel.version }}.0" "illuminate/http:^${{ matrix.laravel.version }}.0" "illuminate/support:^${{ matrix.laravel.version }}.0" "illuminate/database:^${{ matrix.laravel.version }}.0" "illuminate/view:^${{ matrix.laravel.version }}.0" "illuminate/routing:^${{ matrix.laravel.version }}.0" "illuminate/cache:^${{ matrix.laravel.version }}.0" --no-interaction --no-progress --${{ matrix.stability }} -W
           composer require "orchestra/testbench:^${{ matrix.laravel.testbench }}.0" --dev --no-interaction --no-progress --${{ matrix.stability }} -W
 
