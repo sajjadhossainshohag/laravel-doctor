@@ -14,10 +14,13 @@ jobs:
       fail-fast: true
       matrix:
         php: [8.2, 8.3, 8.4]
-        laravel: [11, 12, 13]
+        laravel:
+          - { version: 11, testbench: 9 }
+          - { version: 12, testbench: 10 }
+          - { version: 13, testbench: 11 }
         stability: [prefer-lowest, prefer-stable]
 
-    name: PHP ${{ matrix.php }} - Laravel ${{ matrix.laravel }} (${{ matrix.stability }})
+    name: PHP ${{ matrix.php }} - Laravel ${{ matrix.laravel.version }} (${{ matrix.stability }})
 
     steps:
       - name: Checkout code
@@ -32,7 +35,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          composer require "illuminate/console:^${{ matrix.laravel }}.0" "illuminate/contracts:^${{ matrix.laravel }}.0" "illuminate/http:^${{ matrix.laravel }}.0" "illuminate/support:^${{ matrix.laravel }}.0" "illuminate/database:^${{ matrix.laravel }}.0" "illuminate/view:^${{ matrix.laravel }}.0" "illuminate/routing:^${{ matrix.laravel }}.0" "illuminate/cache:^${{ matrix.laravel }}.0" "orchestra/testbench:^${{ matrix.laravel }}.0" --no-interaction --no-progress --${{ matrix.stability }}
+          composer require "illuminate/console:^${{ matrix.laravel.version }}.0" "illuminate/contracts:^${{ matrix.laravel.version }}.0" "illuminate/http:^${{ matrix.laravel.version }}.0" "illuminate/support:^${{ matrix.laravel.version }}.0" "illuminate/database:^${{ matrix.laravel.version }}.0" "illuminate/view:^${{ matrix.laravel.version }}.0" "illuminate/routing:^${{ matrix.laravel.version }}.0" "illuminate/cache:^${{ matrix.laravel.version }}.0" "orchestra/testbench:^${{ matrix.laravel.testbench }}.0" --no-interaction --no-progress --${{ matrix.stability }} -W
 
       - name: Run tests
         run: vendor/bin/phpunit
