@@ -1,0 +1,97 @@
+<?php
+
+namespace SajjadHossain\Doctor\Checks\Schema;
+
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use SajjadHossain\Doctor\Contracts\HealthCheck;
+use SajjadHossain\Doctor\DTOs\CheckResult;
+use SajjadHossain\Doctor\Enums\Severity;
+
+class ForeignKeyCheck implements HealthCheck
+{
+    public function name(): string
+    {
+        return 'Foreign Key Integrity';
+    }
+
+    public function category(): string
+    {
+        return 'schema';
+    }
+
+    public function severity(): Severity
+    {
+        return Severity::Warning;
+    }
+
+    public function run(): CheckResult
+    {
+        try {
+            $tables = Schema::getAllTables();
+        } catch (\BadMethodCallException) {
+            return new CheckResult(
+                check: $this->name(),
+                category: $this->category(),
+                severity: $this->severity(),
+                passed: true,
+                message: 'Foreign key checks are not supported on this database driver.',
+            );
+        }
+
+        $locations = [];
+
+        foreach ($tables as $tableRow) {
+            $tableName = is_array($tableRow) ? reset($tableRow) : $tableRow;
+
+            try {
+                $foreignKeys = DB::select(
+                    "SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+                     FROM information_schema.KEY_COLUMN_USAGE
+                     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL",
+                    [DB::getDatabaseName(), $tableName]
+                );
+
+                foreach ($foreignKeys as $fk) {
+                    if (!Schema::hasTable($fk->REFERENCED_TABLE_NAME)) {
+                        $locations[] = [
+                            'table' => $tableName,
+                            'column' => $fk->COLUMN_NAME,
+                            'references_table' => $fk->REFERENCED_TABLE_NAME,
+                            'issue' => 'Referenced table does not exist',
+                        ];
+                    } elseif (!Schema::hasColumn($fk->REFERENCED_TABLE_NAME, $fk->REFERENCED_COLUMN_NAME)) {
+                        $locations[] = [
+                            'table' => $tableName,
+                            'column' => $fk->COLUMN_NAME,
+                            'references_table' => $fk->REFERENCED_TABLE_NAME,
+                            'references_column' => $fk->REFERENCED_COLUMN_NAME,
+                            'issue' => 'Referenced column does not exist',
+                        ];
+                    }
+                }
+            } catch (\Throwable) {
+                continue;
+            }
+        }
+
+        if (empty($locations)) {
+            return new CheckResult(
+                check: $this->name(),
+                category: $this->category(),
+                severity: $this->severity(),
+                passed: true,
+                message: 'All foreign key references are valid.',
+            );
+        }
+
+        return new CheckResult(
+            check: $this->name(),
+            category: $this->category(),
+            severity: $this->severity(),
+            passed: false,
+            message: count($locations) . ' foreign key issue(s) found.',
+            locations: $locations,
+        );
+    }
+}
