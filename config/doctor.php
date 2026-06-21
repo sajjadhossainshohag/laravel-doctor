@@ -55,12 +55,6 @@ return [
         ],
     ],
 
-    'dashboard' => [
-        'enabled' => env('DOCTOR_DASHBOARD', false),
-        'middleware' => ['web', 'auth'],
-        'path' => 'doctor',
-    ],
-
     'notifications' => [
         'slack_webhook' => env('DOCTOR_SLACK_WEBHOOK'),
         'email' => env('DOCTOR_NOTIFY_EMAIL'),

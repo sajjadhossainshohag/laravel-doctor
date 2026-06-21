@@ -71,7 +71,7 @@ class DoctorServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        if ($this->app->runningInConsole() || config('doctor.dashboard.enabled', false)) {
+        if ($this->app->runningInConsole()) {
             $this->app->singleton(CheckRegistry::class);
             $this->app->singleton(ScanResultCache::class);
         }
@@ -194,9 +194,5 @@ class DoctorServiceProvider extends ServiceProvider
             ]);
         }
 
-        if (config('doctor.dashboard.enabled', false)) {
-            $this->loadRoutesFrom(__DIR__ . '/../routes/doctor.php');
-            $this->loadViewsFrom(__DIR__ . '/../resources/views', 'doctor');
-        }
     }
 }
