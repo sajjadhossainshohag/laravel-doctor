@@ -87,8 +87,10 @@ class WrongRelationshipKeyConventionCheck implements HealthCheck
         $relations = [];
 
         // Find each method body that contains a relationship call.
+        // Allow an optional return type between ) and { — modern Laravel
+        // relations are typed: function items(): HasMany { ... }.
         if (preg_match_all(
-            '/function\s+(\w+)\s*\([^)]*\)\s*\{(.*?)\n\s*\}/s',
+            '/function\s+(\w+)\s*\([^)]*\)\s*(?::\s*[\\\\\w|&\[\]<>,\s]+)?\s*\{(.*?)\n\s*\}/s',
             $content,
             $methods,
             PREG_OFFSET_CAPTURE

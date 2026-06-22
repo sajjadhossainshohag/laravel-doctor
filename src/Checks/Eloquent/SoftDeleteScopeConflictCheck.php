@@ -70,10 +70,19 @@ class SoftDeleteScopeConflictCheck implements HealthCheck
                 $usesWithTrashed = (bool) preg_match('/->\s*(withTrashed|onlyTrashed)\s*\(/', $stripped);
                 $manualDeletedAt = (bool) preg_match('/where\s*\(\s*[\'"]deleted_at[\'"]/', $stripped);
 
-                if ($usesSoftDeletes && $usesWithTrashed && $manualDeletedAt) {
+                // A SoftDeletes model that manually filters deleted_at is
+                // almost always redundant — the SoftDeletes global scope
+                // already filters out trashed rows on this model. The only
+                // legitimate exception is when withTrashed()/onlyTrashed()
+                // is in the same chain, but even that combination is usually
+                // a mistake. Flag both cases.
+                if ($usesSoftDeletes && $manualDeletedAt) {
+                    $hint = $usesWithTrashed
+                        ? 'withTrashed()/onlyTrashed() is also used — manual filter is definitely redundant'
+                        : 'manual filter is redundant with the SoftDeletes global scope';
                     $locations[] = [
                         'file' => $file->getRealPath(),
-                        'issue' => 'SoftDeletes model uses withTrashed()/onlyTrashed() together with a manual where(\'deleted_at\', ...) — manual filter is redundant with the global scope',
+                        'issue' => "SoftDeletes model uses manual where('deleted_at', ...) — {$hint}",
                         'value' => 'where(\'deleted_at\', ...)',
                     ];
                 }
@@ -95,9 +104,9 @@ class SoftDeleteScopeConflictCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' soft-delete scope conflict(s) detected.',
+            message: count($locations).' soft-delete deleted_at filter conflict(s) detected.',
             locations: $locations,
-            suggestion: 'Avoid combining withTrashed()/onlyTrashed() with a manual where(\'deleted_at\', ...) clause on SoftDeletes models.',
+            suggestion: 'Avoid using a manual where(\'deleted_at\', ...) clause on SoftDeletes models — the global scope already filters trashed rows.',
         );
     }
 }

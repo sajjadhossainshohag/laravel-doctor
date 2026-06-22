@@ -41,8 +41,9 @@ class WireModelMissingPropertyCheck implements HealthCheck
             }
 
             $content = file_get_contents($componentView);
-            // Match wire:model, wire:model.lazy, .defer, .live (any modifier).
-            preg_match_all('/wire:model(?:\.[a-z]+)?\s*=\s*[\'"]?([\w.\-]+)[\'"\s>]/', $content, $m);
+            // Match wire:model, wire:model.lazy, wire:model.lazy.debounce.500ms,
+            // .defer, .live, etc. (any number of modifiers).
+            preg_match_all('/wire:model(?:\.[\w.]+)*\s*=\s*[\'"]?([\w.\-]+)[\'"\s>]/', $content, $m);
             foreach ($m[1] as $target) {
                 // Nested / form-object bindings (foo.bar or foo-bar-array
                 // syntax for nested data) are valid even when no single

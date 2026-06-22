@@ -27,7 +27,6 @@ class DeletedScheduledCommandCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $paths = [app_path('Console')];
         $artisanCommands = [];
         try {
             $artisan = app(Kernel::class);
@@ -35,26 +34,34 @@ class DeletedScheduledCommandCheck implements HealthCheck
         } catch (\Throwable) {
         }
 
-        foreach ($paths as $path) {
+        $filesToScan = [];
+        foreach ([app_path('Console'), app_path('Providers')] as $path) {
             if (! is_dir($path)) {
                 continue;
             }
-
-            $files = new \RecursiveIteratorIterator(
+            $iter = new \RecursiveIteratorIterator(
                 new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
             );
-
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
+            foreach ($iter as $file) {
+                if ($file->getExtension() === 'php') {
+                    $filesToScan[] = $file->getRealPath();
                 }
+            }
+        }
+        $consoleRoute = base_path('routes/console.php');
+        if (is_file($consoleRoute)) {
+            $filesToScan[] = $consoleRoute;
+        }
 
-                $content = file_get_contents($file->getRealPath());
-                if (preg_match('/\$schedule->command\s*\(\s*[\'"]([^\'"]+)[\'"]/', $content, $m)) {
-                    $name = $m[1];
+        foreach ($filesToScan as $filePath) {
+            $content = file_get_contents($filePath);
+            // Match both $schedule->command('name') and Schedule::command('name').
+            // preg_match_all so every reference is checked.
+            if (preg_match_all('/(?:\$schedule|Schedule::)->command\s*\(\s*[\'"]([^\'"]+)[\'"]/', $content, $matches)) {
+                foreach ($matches[1] as $name) {
                     if (! empty($artisanCommands) && ! in_array($name, $artisanCommands, true)) {
                         $locations[] = [
-                            'file' => $file->getRealPath(),
+                            'file' => $filePath,
                             'issue' => "Scheduled command '{$name}' is not registered in Artisan",
                         ];
                     }

@@ -26,28 +26,18 @@ class ScheduledCommandNotExistsCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $paths = [app_path('Console')];
+        $filesToScan = $this->collectScheduleFiles();
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
-                continue;
-            }
-
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
-
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
-
-                $content = file_get_contents($file->getRealPath());
-                if (preg_match('/\$schedule->command\s*\(\s*([\w\\\\]+)::class/', $content, $m)) {
-                    $commandClass = $m[1];
+        foreach ($filesToScan as $filePath) {
+            $content = file_get_contents($filePath);
+            // Match both $schedule->command(Foo::class) and
+            // Schedule::command(Foo::class). Use preg_match_all so we
+            // catch every reference in the file, not just the first.
+            if (preg_match_all('/(?:\$schedule|Schedule::)->command\s*\(\s*([\w\\\\]+)::class/', $content, $matches)) {
+                foreach ($matches[1] as $commandClass) {
                     if (! class_exists($commandClass)) {
                         $locations[] = [
-                            'file' => $file->getRealPath(),
+                            'file' => $filePath,
                             'issue' => "Scheduled command class '{$commandClass}' does not exist",
                         ];
                     }
@@ -74,5 +64,35 @@ class ScheduledCommandNotExistsCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Create the command class or fix the reference in the schedule.',
         );
+    }
+
+    /**
+     * Collect PHP files that may contain schedule definitions: app/Console,
+     * app/Providers (boot() method), and routes/console.php.
+     *
+     * @return list<string>
+     */
+    private function collectScheduleFiles(): array
+    {
+        $files = [];
+        foreach ([app_path('Console'), app_path('Providers')] as $path) {
+            if (! is_dir($path)) {
+                continue;
+            }
+            $iter = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
+            );
+            foreach ($iter as $file) {
+                if ($file->getExtension() === 'php') {
+                    $files[] = $file->getRealPath();
+                }
+            }
+        }
+        $consoleRoute = base_path('routes/console.php');
+        if (is_file($consoleRoute)) {
+            $files[] = $consoleRoute;
+        }
+
+        return $files;
     }
 }

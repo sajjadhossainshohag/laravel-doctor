@@ -6,9 +6,9 @@ use Illuminate\Support\ServiceProvider;
 
 class ConfigAccessProvider extends ServiceProvider
 {
-    public function register()
+    public function register(): void
     {
-        $value = config('app.name');
+        $value = env('APP_ENV');
     }
 
     public function boot(): void {}

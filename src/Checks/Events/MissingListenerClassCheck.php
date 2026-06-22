@@ -43,14 +43,50 @@ class MissingListenerClassCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                preg_match_all('/\b(\w+Listener\w*)\b/', $content, $listeners);
-                foreach (array_unique($listeners[1]) as $listener) {
-                    $fqcn = $this->resolveClass($content, $listener);
-                    if ($fqcn && ! class_exists($fqcn)) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'issue' => "Listener class '{$fqcn}' does not exist",
-                        ];
+
+                // 1) Catch listener references inside $listen arrays:
+                //      protected $listen = [
+                //          FooEvent::class => [BarListener::class, ...],
+                //          \App\Events\X::class => 'FooListener',
+                //      ];
+                if (preg_match_all('/[\'"]([\\\\\w]+Listener[\w\\\\]*)[\'"]/', $content, $qListeners)) {
+                    foreach (array_unique($qListeners[1]) as $listener) {
+                        $fqcn = ltrim($listener, '\\');
+                        if (! class_exists($fqcn)) {
+                            $locations[] = [
+                                'file' => $file->getRealPath(),
+                                'issue' => "Listener class '{$fqcn}' does not exist",
+                            ];
+                        }
+                    }
+                }
+                if (preg_match_all('/([\w\\\\]+Listener[\w\\\\]*)::class/', $content, $cListeners)) {
+                    foreach (array_unique($cListeners[1]) as $listener) {
+                        $fqcn = ltrim($listener, '\\');
+                        if (! class_exists($fqcn)) {
+                            $locations[] = [
+                                'file' => $file->getRealPath(),
+                                'issue' => "Listener class '{$fqcn}' does not exist",
+                            ];
+                        }
+                    }
+                }
+
+                // 2) Catch bareword references to *Listener* identifiers
+                //    (e.g. `Event::listen(NewMessageListener::class, ...)`).
+                //    The original `\\b(\\w+Listener\\w*)\\b` was too broad
+                //    because it matched `FooListenerBar` in any context.
+                //    Restrict it to identifiers that are either followed
+                //    by `::class` or used as a string literal.
+                if (preg_match_all('/\b(\w+Listener)\b(?=\s*::class)/', $content, $classListeners)) {
+                    foreach (array_unique($classListeners[1]) as $listener) {
+                        $fqcn = $this->resolveClass($content, $listener);
+                        if ($fqcn && ! class_exists($fqcn)) {
+                            $locations[] = [
+                                'file' => $file->getRealPath(),
+                                'issue' => "Listener class '{$fqcn}' does not exist",
+                            ];
+                        }
                     }
                 }
             }

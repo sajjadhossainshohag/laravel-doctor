@@ -100,7 +100,7 @@ class JobHasHandleMethodCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations) . ' job class(es) missing a dispatch method.',
+            message: count($locations) . ' job class(es) missing a handle() (or __invoke()) method.',
             locations: $locations,
             suggestion: 'Add a handle() or __invoke() method to the job class.',
         );

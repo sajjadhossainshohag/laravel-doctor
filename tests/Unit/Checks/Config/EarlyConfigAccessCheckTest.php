@@ -16,6 +16,6 @@ class EarlyConfigAccessCheckTest extends TestCase
 
         $result = $check->run();
 
-        $this->assertCheckFailed($result, Severity::Info, 'register()');
+        $this->assertCheckFailed($result, Severity::Warning, 'register()');
     }
 }

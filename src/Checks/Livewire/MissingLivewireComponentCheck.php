@@ -43,7 +43,10 @@ class MissingLivewireComponentCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                preg_match_all('/<livewire:([\w-]+)\s/', $content, $m);
+                // Match <livewire:foo>, <livewire:foo/>, <livewire:foo ...attrs>, etc.
+// The original regex required whitespace after the name and missed the
+// default idiomatic forms (no attrs, self-closing).
+preg_match_all('/<livewire:([\w-]+)(?=[\s>\/])/', $content, $m);
                 foreach ($m[1] as $component) {
                     $className = $this->componentToClass($component);
                     if (! class_exists($className)) {

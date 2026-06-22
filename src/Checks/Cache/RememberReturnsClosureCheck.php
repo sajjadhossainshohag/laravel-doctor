@@ -69,8 +69,12 @@ class RememberReturnsClosureCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                // Strip line comments first to avoid matching commented-out code.
-                $stripped = preg_replace('!(//|#).*!', '', $content);
+                // Strip block AND line comments before matching — otherwise a
+                // commented-out Cache::remember(...) call still triggers the
+                // check. Order matters: block comments first so we don't
+                // accidentally cut a /* ... */ block in half on a // match.
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!(//|#).*!', '', $stripped);
                 if ($this->rememberCallbackReturnsClosure($stripped)) {
                     $locations[] = [
                         'file' => $file->getRealPath(),

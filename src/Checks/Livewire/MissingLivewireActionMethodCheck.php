@@ -46,14 +46,57 @@ class MissingLivewireActionMethodCheck implements HealthCheck
             }
 
             $content = file_get_contents($componentView);
-            preg_match_all('/wire:click\s*=\s*[\'"](\w+)/', $content, $m);
+
+            // Determine the scope of this view. The OWNING component is
+            // the one mapped to this view; any <livewire:child> embedded
+            // inside the view delegates wire:click handlers to `child`,
+            // not to us. We collect embedded child component names so we
+            // can skip their wire:click handlers.
+            $embeddedChildren = [];
+            if (preg_match_all('/<livewire:([\w-]+)(?=[\s>\/])/', $content, $livewireMatches)) {
+                foreach ($livewireMatches[1] as $childKebab) {
+                    $studly = str_replace(' ', '', ucwords(str_replace('-', ' ', $childKebab)));
+                    $embeddedChildren[$childKebab] = $studly;
+                }
+            }
+            // Also handle @livewire('foo', ...) directive.
+            if (preg_match_all('/@livewire\s*\(\s*[\'"]([^\'"]+)[\'"]/', $content, $livewireDirMatches)) {
+                foreach ($livewireDirMatches[1] as $childKebab) {
+                    $studly = str_replace(' ', '', ucwords(str_replace('-', ' ', $childKebab)));
+                    $embeddedChildren[$childKebab] = $studly;
+                }
+            }
+
+            // Strip embedded child component view content so their
+            // wire:click targets don't get attributed to the parent.
+            // (We can't easily resolve nested views, so we only do a
+            // coarse block-strip: anything between <livewire:CHILD ...>
+            // and the matching closing tag — heuristic but better than
+            // nothing for the common case.)
+            $scopedContent = $this->stripEmbeddedChildBlocks($content);
+
+            // Match wire:click="action" (or 'action'). Allow method
+            // names with letters, digits, underscores, and dots for
+            // nested-component dispatch ('$wire.parent.method').
+            preg_match_all('/wire:click(?:\.[a-z]+)?\s*=\s*[\'"]([\w.$]+)[\'"]/', $scopedContent, $m);
+            $componentMethods = $methodNamesByComponent[$shortName] ?? [];
+
             foreach ($m[1] as $action) {
-                $componentMethods = $methodNamesByComponent[$shortName] ?? [];
-                if (! in_array($action, $componentMethods, true)) {
+                // $dispatch('foo', ...) or $wire.parent.method — skip
+                // (those are dispatch to a named event / nested component).
+                if ($action === '' || str_starts_with($action, '$')) {
+                    continue;
+                }
+                // Bare method name only.
+                $method = explode('.', $action)[0];
+                if ($method === '' || $method === '$wire') {
+                    continue;
+                }
+                if (! in_array($method, $componentMethods, true)) {
                     $locations[] = [
                         'file' => $componentView,
                         'component' => $className,
-                        'issue' => "wire:click=\"{$action}\" — method not found on Livewire component '{$shortName}'",
+                        'issue' => "wire:click=\"{$action}\" — method '{$method}' not found on Livewire component '{$shortName}'",
                     ];
                 }
             }
@@ -180,5 +223,31 @@ class MissingLivewireActionMethodCheck implements HealthCheck
         }
 
         return $methods;
+    }
+
+    /**
+     * Replace any <livewire:CHILD ...>...</livewire:CHILD> (or self-closing)
+     * block in the view content with blank space, so wire:click handlers
+     * inside embedded children aren't attributed to the parent component.
+     */
+    private function stripEmbeddedChildBlocks(string $content): string
+    {
+        // Self-closing form: <livewire:foo ... />
+        $content = preg_replace(
+            '/<livewire:[\w-]+(?:[^>"\']|"[^"]*"|\'[^\']*\')*\/>/s',
+            '',
+            $content
+        );
+        // Paired form: <livewire:foo ...>...</livewire:foo>. We do a
+        // simple non-nested strip — nested <livewire:> inside another
+        // child's slot is uncommon and the heuristic catches the
+        // majority of cases.
+        $content = preg_replace(
+            '/<livewire:[\w-]+(?:[^>"\']|"[^"]*"|\'[^\']*\')*>.*?<\/livewire:[\w-]+>/s',
+            '',
+            $content
+        );
+
+        return $content;
     }
 }

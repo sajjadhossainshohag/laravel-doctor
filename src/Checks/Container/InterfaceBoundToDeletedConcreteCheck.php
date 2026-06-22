@@ -112,13 +112,16 @@ class InterfaceBoundToDeletedConcreteCheck implements HealthCheck
             return $class;
         }
 
-        // Resolve via `use` imports in the file.
-        if (preg_match_all('/^\s*use\s+([\w\\\\]+)(?:\s+as\s+\w+)?\s*;/m', $content, $uses)) {
-            foreach ($uses[1] as $fqcn) {
-                $parts = explode('\\', ltrim($fqcn, '\\'));
-                $short = end($parts);
-                if ($short === $class) {
-                    return ltrim($fqcn, '\\');
+        // Resolve via `use` imports in the file. We must also handle aliases
+        // (use Foo\Bar as Baz) — the alias's short name is 'Baz', not 'Bar'.
+        if (preg_match_all('/^\s*use\s+([\w\\\\]+)(?:\s+as\s+(\w+))?\s*;/m', $content, $uses, PREG_SET_ORDER)) {
+            foreach ($uses as $useMatch) {
+                $fqcn = ltrim($useMatch[1], '\\');
+                $alias = $useMatch[2] ?? null;
+                $shortFromFqcn = basename(str_replace('\\', '/', $fqcn));
+                $shortNames = $alias ? [$alias, $shortFromFqcn] : [$shortFromFqcn];
+                if (in_array($class, $shortNames, true)) {
+                    return $fqcn;
                 }
             }
         }

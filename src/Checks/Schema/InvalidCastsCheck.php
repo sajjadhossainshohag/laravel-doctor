@@ -32,7 +32,7 @@ class InvalidCastsCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Warning;
+        return Severity::Error;
     }
 
     public function run(): CheckResult
@@ -176,7 +176,41 @@ class InvalidCastsCheck implements HealthCheck
      */
     private function discoverModels(): array
     {
-        $models = $this->modelClasses ?: get_declared_classes();
+        if (! empty($this->modelClasses)) {
+            return $this->modelClasses;
+        }
+
+        // Fall back to scanning app/Models. Previously this method only
+        // returned get_declared_classes(), which is empty unless something
+        // has already loaded the model classes — making the check a no-op
+        // for typical apps.
+        $models = [];
+        $modelDir = app_path('Models');
+        if (is_dir($modelDir)) {
+            $iter = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($modelDir, \RecursiveDirectoryIterator::SKIP_DOTS)
+            );
+            foreach ($iter as $file) {
+                if ($file->getExtension() !== 'php') {
+                    continue;
+                }
+                $contents = file_get_contents($file->getRealPath());
+                if (! preg_match('/^\s*namespace\s+([\w\\\\]+)\s*;/m', $contents, $ns)
+                    || ! preg_match('/^\s*(?:final\s+|abstract\s+)?(?:readonly\s+)?class\s+(\w+)/m', $contents, $cm)) {
+                    continue;
+                }
+                $candidate = ltrim($ns[1], '\\').'\\'.$cm[1];
+                if (class_exists($candidate)) {
+                    $models[] = $candidate;
+                }
+            }
+        }
+
+        // Last resort: anything declared so far.
+        if (empty($models)) {
+            $models = get_declared_classes();
+        }
+
         return $models;
     }
 }

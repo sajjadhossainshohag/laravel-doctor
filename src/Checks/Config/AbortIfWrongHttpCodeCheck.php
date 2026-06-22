@@ -60,28 +60,35 @@ class AbortIfWrongHttpCodeCheck implements HealthCheck
                 $stripped = preg_replace("/'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'/", "''", $stripped);
                 $stripped = preg_replace('/"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"/', '""', $stripped);
 
-                // preg_match_all so EVERY occurrence per file is checked
-                // (previously preg_match only inspected the first hit per file).
-                $found = false;
-                if (preg_match_all('/abort_if\s*\(\s*[^,]+,\s*(\d{3})/', $stripped, $m1)) {
-                    foreach ($m1[1] as $code) {
-                        if ($this->isBadHttpCode((int) $code)) {
-                            $locations[] = [
-                                'file' => $file->getRealPath(),
-                                'issue' => "abort_if() with HTTP {$code} — expected 4xx/5xx error code",
-                            ];
-                            $found = true;
-                        }
+                // Use balanced-paren parsing so the CONDITION argument can
+                // contain commas (e.g. abort_if(in_array($x, [1, 2]), 200))
+                // without truncating the match at the first comma.
+                foreach (['abort_if', 'abort_unless'] as $fn) {
+                    if (! preg_match_all('/'.$fn.'\s*\(/', $stripped, $calls, PREG_OFFSET_CAPTURE)) {
+                        continue;
                     }
-                }
-                if (preg_match_all('/abort_unless\s*\(\s*[^,]+,\s*(\d{3})/', $stripped, $m2)) {
-                    foreach ($m2[1] as $code) {
-                        if ($this->isBadHttpCode((int) $code)) {
+                    foreach ($calls[0] as [$match, $offset]) {
+                        // Position the cursor AT the opening '(' so
+                        // readBalancedParens can find the matching ')'.
+                        $argsStart = $offset + strlen($match) - 1;
+                        $args = $this->readBalancedParens($stripped, $argsStart);
+                        if ($args === null) {
+                            continue;
+                        }
+                        // Split args and grab the SECOND arg (the HTTP code).
+                        $parts = $this->splitTopLevelArgs($args);
+                        if (! isset($parts[1])) {
+                            continue;
+                        }
+                        $code = (int) trim($parts[1]);
+                        if ($code < 100 || $code > 599) {
+                            continue;
+                        }
+                        if ($this->isBadHttpCode($code)) {
                             $locations[] = [
                                 'file' => $file->getRealPath(),
-                                'issue' => "abort_unless() with HTTP {$code} — expected 4xx/5xx error code",
+                                'issue' => "{$fn}() with HTTP {$code} — expected 4xx/5xx error code",
                             ];
-                            $found = true;
                         }
                     }
                 }
@@ -114,5 +121,80 @@ class AbortIfWrongHttpCodeCheck implements HealthCheck
         // 1xx (informational) and 2xx/3xx (success/redirection) are not errors.
         // Only 4xx/5xx are appropriate for abort().
         return $code < 400;
+    }
+
+    private function readBalancedParens(string $haystack, int $open): ?string
+    {
+        if (! isset($haystack[$open]) || $haystack[$open] !== '(') {
+            return null;
+        }
+        $depth = 0;
+        $i = $open;
+        $inString = false;
+        $stringChar = '';
+        $len = strlen($haystack);
+        while ($i < $len) {
+            $c = $haystack[$i];
+            if ($inString) {
+                if ($c === '\\') { $i += 2; continue; }
+                if ($c === $stringChar) { $inString = false; }
+            } else {
+                if ($c === '\'' || $c === '"') { $inString = true; $stringChar = $c; }
+                elseif ($c === '(') { $depth++; }
+                elseif ($c === ')') {
+                    $depth--;
+                    if ($depth === 0) {
+                        return substr($haystack, $open + 1, $i - $open - 1);
+                    }
+                }
+            }
+            $i++;
+        }
+
+        return null;
+    }
+
+    private function splitTopLevelArgs(string $args): array
+    {
+        $parts = [];
+        $depth = 0;
+        $bracketDepth = 0;
+        $inString = false;
+        $stringChar = '';
+        $current = '';
+        $len = strlen($args);
+        for ($i = 0; $i < $len; $i++) {
+            $c = $args[$i];
+            if ($inString) {
+                $current .= $c;
+                if ($c === '\\') { $current .= ($args[++$i] ?? ''); continue; }
+                if ($c === $stringChar) { $inString = false; }
+                continue;
+            }
+            if ($c === '\'' || $c === '"') { $inString = true; $stringChar = $c; $current .= $c; continue; }
+            if ($c === '(' || $c === '[') {
+                if ($c === '(') $depth++;
+                if ($c === '[') $bracketDepth++;
+                $current .= $c;
+                continue;
+            }
+            if ($c === ')' || $c === ']') {
+                if ($c === ')') $depth--;
+                if ($c === ']') $bracketDepth--;
+                $current .= $c;
+                continue;
+            }
+            if ($c === ',' && $depth === 0 && $bracketDepth === 0) {
+                $parts[] = $current;
+                $current = '';
+                continue;
+            }
+            $current .= $c;
+        }
+        if ($current !== '' || count($parts) > 0) {
+            $parts[] = $current;
+        }
+
+        return $parts;
     }
 }

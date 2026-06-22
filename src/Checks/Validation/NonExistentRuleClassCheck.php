@@ -27,7 +27,6 @@ class NonExistentRuleClassCheck implements HealthCheck
     {
         $locations = [];
         $paths = [app_path('Http/Requests'), app_path('Rules')];
-        $declared = get_declared_classes();
 
         foreach ($paths as $path) {
             if (! is_dir($path)) {
@@ -48,14 +47,14 @@ class NonExistentRuleClassCheck implements HealthCheck
                 $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
                 // Match `new ClassName(...)` where ClassName is any
-                // valid PHP identifier — NOT just *Rule*. A rule class
-                // doesn't have to be named with the "Rule" suffix; many
-                // teams use descriptive names (UniqueUsername, ValidIban,
-                // etc.).
-                if (preg_match_all('/new\s+([A-Z]\w+)\s*\(/', $stripped, $m)) {
+                // valid PHP identifier — including a leading-backslash
+                // fully-qualified name (`new \App\Rules\Foo()`). The
+                // leading `\` is critical for FQCN references.
+                if (preg_match_all('/new\s+\\\\?([A-Z][\w\\\\]*)\s*\(/', $stripped, $m)) {
                     foreach ($m[1] as $ruleClass) {
                         // Skip Laravel built-in Rule static factory methods.
-                        if (in_array($ruleClass, ['Rule', 'Date', 'File', 'Fluent'], true)) {
+                        $short = basename(str_replace('\\', '/', $ruleClass));
+                        if (in_array($short, ['Rule', 'Date', 'File', 'Fluent'], true)) {
                             continue;
                         }
 
@@ -65,6 +64,9 @@ class NonExistentRuleClassCheck implements HealthCheck
                             continue;
                         }
                         if (class_exists($ruleClass)) {
+                            continue;
+                        }
+                        if (class_exists(ltrim($ruleClass, '\\'))) {
                             continue;
                         }
 

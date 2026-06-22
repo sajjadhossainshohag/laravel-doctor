@@ -65,33 +65,19 @@ class MissingGuardedOrFillableCheck implements HealthCheck
                 $hasUnguardedAttr = preg_match('/#\s*\[\s*Unguarded\b/', $stripped);
                 $hasGuardedAttr = preg_match('/#\s*\[\s*Guarded\b/', $stripped);
 
-                // Laravel's default $guarded = ['*'] already blocks all mass
-                // assignment, so a model with no override is SAFE.
-                // We only flag a model that explicitly sets $guarded = []
-                // (or uses the Unguarded attribute) without declaring fillable
-                // — that combination IS risky.
-                $explicitlyEmptyGuarded = preg_match('/protected\s+\$\s*guarded\s*=\s*\[\s*\]/', $stripped);
-
                 if ($hasFillable || $hasGuarded) {
                     // User has declared one of them — assume they know.
                     continue;
                 }
 
-                if ($explicitlyEmptyGuarded || $hasUnguardedAttr) {
-                    // No $guarded or $fillable set, AND empty-guarded is
-                    // explicitly opted into. Only flag if the user did NOT
-                    // also declare $fillable to lock the model down.
-                    if ($hasFillable) {
-                        continue;
-                    }
-                    $locations[] = [
-                        'file' => $file->getRealPath(),
-                        'issue' => "Model '{$classM[1]}' has empty \$guarded (or #[Unguarded]) but no \$fillable — all attributes are mass-assignable",
-                    ];
-                }
-
-                // Otherwise: no override at all. Laravel's default
-                // $guarded = ['*'] is in effect — that is safe.
+                // Neither $fillable nor $guarded is declared. This is risky
+                // because the model's mass-assignment behaviour is implicit
+                // (Laravel's default $guarded = ['*'] applies), and the
+                // developer may not have intended that. Flag it.
+                $locations[] = [
+                    'file' => $file->getRealPath(),
+                    'issue' => "Model '{$classM[1]}' declares neither \$fillable nor \$guarded — mass-assignment behaviour is implicit and likely unintended",
+                ];
             }
         }
 

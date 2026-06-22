@@ -85,27 +85,41 @@ class UnregisteredMiddlewareCheck implements HealthCheck
                 $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
                 $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                // Strip string literals so we don't flag commented or quoted
-                // middleware aliases.
-                $stripped = preg_replace("/'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'/", "''", $stripped);
-                $stripped = preg_replace('/"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"/', '""', $stripped);
-
+                // Match both single-string form (->middleware('alias')) AND array form
+                // (->middleware(['auth', 'custom'])). We match against the
+                // UN-stripped content so quoted aliases inside ->middleware(...)
+                // are still found. Commented-out calls won't match anyway because
+                // we strip // and /* */ comments above.
+                $aliases = [];
                 if (preg_match_all('/->middleware\s*\(\s*[\'"]([a-z0-9_.-]+)[\'"]/', $stripped, $m)) {
                     foreach ($m[1] as $alias) {
-                        $base = explode(':', $alias, 2)[0];
-
-                        $known = in_array($base, $builtinAliases, true)
-                            || in_array($alias, $registeredAliases, true)
-                            || in_array($base, $builtinGroups, true)
-                            || in_array($base, $registeredGroups, true)
-                            || class_exists($base);
-
-                        if (! $known) {
-                            $locations[] = [
-                                'file' => $file->getRealPath(),
-                                'issue' => "Middleware alias '{$alias}' is not registered in bootstrap/app.php",
-                            ];
+                        $aliases[] = $alias;
+                    }
+                }
+                if (preg_match_all('/->middleware\s*\(\s*\[(.*?)\]\s*\)/s', $stripped, $arrM)) {
+                    foreach ($arrM[1] as $block) {
+                        if (preg_match_all('/[\'"]([a-z0-9_.-]+)[\'"]/i', $block, $innerM)) {
+                            foreach ($innerM[1] as $alias) {
+                                $aliases[] = $alias;
+                            }
                         }
+                    }
+                }
+
+                foreach ($aliases as $alias) {
+                    $base = explode(':', $alias, 2)[0];
+
+                    $known = in_array($base, $builtinAliases, true)
+                        || in_array($alias, $registeredAliases, true)
+                        || in_array($base, $builtinGroups, true)
+                        || in_array($base, $registeredGroups, true)
+                        || class_exists($base);
+
+                    if (! $known) {
+                        $locations[] = [
+                            'file' => $file->getRealPath(),
+                            'issue' => "Middleware alias '{$alias}' is not registered in bootstrap/app.php",
+                        ];
                     }
                 }
             }

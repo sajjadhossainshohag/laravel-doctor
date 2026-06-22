@@ -5,7 +5,10 @@
       "Bash(php -l \"src/Checks/Cache/CacheTagsOnUnsupportedDriverCheck.php\")",
       "Bash(for f:*)",
       "Bash(do php:*)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(find vendor/laravel/framework/src/Illuminate/Cache -name *.php -path *Taggable*)",
+      "Bash(find vendor/laravel/framework/src/Illuminate/View -name View.php -path *Component*)",
+      "Bash(find vendor/laravel/framework/src/Illuminate/View -name *Component* -type f)"
     ]
   }
 }

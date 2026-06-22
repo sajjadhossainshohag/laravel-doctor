@@ -59,7 +59,24 @@ class ForeignKeyCheck implements HealthCheck
         $locations = [];
 
         foreach ($tables as $tableRow) {
-            $tableName = is_array($tableRow) ? reset($tableRow) : $tableRow;
+            // Schema::getAllTables() return shape varies:
+            //   - Array form on some drivers: [ ['name' => 'foo'], ... ]
+            //   - Object form on MySQL/Postgres: [ stdClass{ name, schema? }, ... ]
+            //   - String form on SQLite (older Laravel): [ 'foo', ... ]
+            if (is_object($tableRow)) {
+                $tableName = $tableRow->name ?? null;
+                if (! is_string($tableName) || $tableName === '') {
+                    continue;
+                }
+            } elseif (is_array($tableRow)) {
+                $first = reset($tableRow);
+                $tableName = is_object($first) ? ($first->name ?? null) : $first;
+                if (! is_string($tableName) || $tableName === '') {
+                    continue;
+                }
+            } else {
+                $tableName = $tableRow;
+            }
 
             try {
                 $foreignKeys = DB::select(

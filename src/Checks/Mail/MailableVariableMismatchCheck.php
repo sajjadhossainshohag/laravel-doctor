@@ -64,7 +64,9 @@ class MailableVariableMismatchCheck implements HealthCheck
                     continue;
                 }
 
-                // Find any view reference in the mailable.
+                // Find any view reference in the mailable. Supports BOTH the legacy
+                // ->view('foo') API and the modern Content-object API
+                // (new Content(view: 'foo')).
                 $viewName = $this->firstViewName($stripped);
                 if ($viewName === null) {
                     continue;
@@ -77,9 +79,9 @@ class MailableVariableMismatchCheck implements HealthCheck
 
                 $viewContent = file_get_contents($viewPath);
 
-                // Resolve all @include / @component subviews from the
-                // main view and union their content so a variable used
-                // inside a partial is still considered used.
+                // Resolve all @include, @component, and <x-foo /> subviews
+                // from the main view and union their content so a
+                // variable used inside a partial is still considered used.
                 $subviewContents = $this->collectSubviewContents($viewContent);
                 $combined = $viewContent."\n".implode("\n", $subviewContents);
 
@@ -121,6 +123,15 @@ class MailableVariableMismatchCheck implements HealthCheck
                 return $m[1];
             }
         }
+        // Modern API: new Content(view: 'foo', ...) or new Content(markdown: 'foo', ...).
+        // Look for `new Content(` and pick the first recognized key.
+        if (preg_match('/new\s+Content\s*\(/', $content)) {
+            foreach (['view', 'html', 'text', 'markdown'] as $k) {
+                if (preg_match('/[\'"]'.preg_quote($k, '/').'[\'"]\s*=>\s*[\'"]([^\'"]+)[\'"]/', $content, $cm)) {
+                    return $cm[1];
+                }
+            }
+        }
         return null;
     }
 
@@ -139,9 +150,9 @@ class MailableVariableMismatchCheck implements HealthCheck
     }
 
     /**
-     * Recursively collect the contents of any @include('...') partials
-     * referenced from this view, so a variable used inside a partial is
-     * still considered "used".
+     * Recursively collect the contents of any @include('...') /
+     * @component('...') / <x-foo /> partials referenced from this view,
+     * so a variable used inside a partial is still considered "used".
      *
      * @return list<string>
      */
@@ -151,21 +162,42 @@ class MailableVariableMismatchCheck implements HealthCheck
             return [];
         }
         $contents = [];
+        $names = [];
         if (preg_match_all('/@include\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $viewContent, $m)) {
-            $hints = config('view.paths', [resource_path('views')]);
-            foreach ($m[1] as $name) {
-                $path = str_replace('.', '/', $name);
+            $names = array_merge($names, $m[1]);
+        }
+        if (preg_match_all('/@component\s*\(\s*[\'"]([^\'"]+)[\'"]/', $viewContent, $m2)) {
+            $names = array_merge($names, $m2[1]);
+        }
+        // Anonymous components: <x-foo /> or <x-foo>...</x-foo>
+        if (preg_match_all('/<x-([a-z0-9.\-]+)[\s>\/]/i', $viewContent, $m3)) {
+            $names = array_merge($names, $m3[1]);
+        }
+
+        $hints = config('view.paths', [resource_path('views')]);
+        foreach (array_unique($names) as $name) {
+            $candidates = [
+                str_replace('.', '/', $name).'.blade.php',
+                'components/'.str_replace('.', '/', $name).'.blade.php',
+            ];
+            foreach ($candidates as $relPath) {
+                $found = false;
                 foreach ($hints as $hint) {
-                    $candidate = $hint.'/'.$path.'.blade.php';
+                    $candidate = $hint.'/'.$relPath;
                     if (file_exists($candidate)) {
                         $sub = file_get_contents($candidate);
                         $contents[] = $sub;
                         $contents = array_merge($contents, $this->collectSubviewContents($sub, $depth + 1));
+                        $found = true;
                         break;
                     }
                 }
+                if ($found) {
+                    break;
+                }
             }
         }
+
         return $contents;
     }
 

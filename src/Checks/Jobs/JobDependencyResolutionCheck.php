@@ -28,15 +28,17 @@ class JobDependencyResolutionCheck implements HealthCheck
         $locations = [];
         $declared = get_declared_classes();
 
-        // Job constructor parameters are serialized into the queue payload
-        // and rehydrated by the worker. They are NOT container-resolved at
-        // construction time, so trying to `app()->make()` them is wrong.
-        // Instead, we verify each constructor parameter has a type that
-        // can be safely serialized (scalar / array / object that exists
-        // at runtime) and is not a Closure / resource.
+        // Job constructor parameters are serialized into the queue payload and
+        // rehydrated by the worker. The most reliable problem we can
+        // statically detect is a Closure-typed parameter — Closures are
+        // never serializable. Other types (PDO, Request, Container, etc.)
+        // are technically serializable on most drivers but can still fail
+        // at runtime; we intentionally do NOT flag those (would over-report
+        // common Laravel patterns like injecting a Repository).
 
+        $scanned = 0;
         foreach ($declared as $class) {
-            if (!is_subclass_of($class, 'Illuminate\Contracts\Queue\ShouldQueue')) {
+            if (! is_subclass_of($class, 'Illuminate\Contracts\Queue\ShouldQueue')) {
                 continue;
             }
 
@@ -52,21 +54,34 @@ class JobDependencyResolutionCheck implements HealthCheck
                 }
 
                 foreach ($constructor->getParameters() as $param) {
+                    $scanned++;
                     if ($param->isDefaultValueAvailable()) {
                         continue;
                     }
                     $type = $param->getType();
-                    if (! $type) {
+                    if ($type === null) {
                         continue;
                     }
 
-                    $typeName = $type->getName();
-                    // Closure and resource are inherently unserializable.
-                    if ($typeName === 'Closure') {
+                    // getName() throws on union/intersection types — check
+                    // the shape first and walk the parts.
+                    $isClosure = false;
+                    if ($type instanceof \ReflectionNamedType) {
+                        $isClosure = $this->isClosureType($type->getName());
+                    } elseif ($type instanceof \ReflectionUnionType || $type instanceof \ReflectionIntersectionType) {
+                        foreach ($type->getTypes() as $part) {
+                            if ($part instanceof \ReflectionNamedType
+                                && $this->isClosureType($part->getName())) {
+                                $isClosure = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if ($isClosure) {
                         $locations[] = [
                             'job' => $class,
                             'parameter' => $param->getName(),
-                            'type' => $typeName,
                             'issue' => 'Job constructor parameter is typed as Closure — Closures cannot be serialized into the queue payload',
                         ];
                     }
@@ -82,7 +97,7 @@ class JobDependencyResolutionCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'All job constructor parameters are serializable.',
+                message: "No Closure-typed job constructor parameters found across {$scanned} queued job(s) inspected.",
             );
         }
 
@@ -95,5 +110,12 @@ class JobDependencyResolutionCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Use serializable types in job constructor parameters (scalars, arrays, model ids).',
         );
+    }
+
+    private function isClosureType(string $name): bool
+    {
+        $name = ltrim($name, '?');
+
+        return $name === 'Closure' || str_ends_with($name, '\\Closure');
     }
 }

@@ -54,7 +54,9 @@ class JobTriesZeroCheck implements HealthCheck
                 $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
                 $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                if (! preg_match('/(?:public|protected|private)\s+\$tries\s*=\s*0\s*;/', $stripped)) {
+                // Allow typed properties (e.g. `public int $tries = 0;`) as well as
+                // untyped ones.
+                if (! preg_match('/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$tries\s*=\s*0\s*;/', $stripped)) {
                     continue;
                 }
 
@@ -65,7 +67,7 @@ class JobTriesZeroCheck implements HealthCheck
                 // will loop indefinitely and the user likely intended
                 // a positive number.
                 $hasRetryUntil = (bool) preg_match('/function\s+retryUntil\s*\(/', $stripped);
-                $hasBackoff = (bool) preg_match('/(?:public|protected|private)\s+\$backoff\s*=/', $stripped);
+                $hasBackoff = (bool) preg_match('/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$backoff\s*=/', $stripped);
 
                 if ($hasRetryUntil || $hasBackoff) {
                     // $tries = 0 is intentional — no warning.

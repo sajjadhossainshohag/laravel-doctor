@@ -47,7 +47,7 @@ class MissingExtendsCheck implements HealthCheck
                 $content = file_get_contents($file->getRealPath());
                 $stripped = $this->stripComments($content);
 
-                preg_match_all('/@extends\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $matches);
+                preg_match_all('/@extends\s*\(\s*[\'"]([^\'"]+)[\'"]\s*(?:,|\))/', $stripped, $matches);
 
                 foreach ($matches[1] as $layoutName) {
                     if (!View::exists($layoutName)) {

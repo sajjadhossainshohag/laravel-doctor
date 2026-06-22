@@ -48,14 +48,18 @@ class S3UrlWithoutConfigCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
+
+                // Strip block + line comments so commented-out code does
+                // not match.
                 $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
                 $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                // Strip quoted strings so we don't flag commented or
-                // documented S3 calls.
-                $stripped = preg_replace("/'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'/", "''", $stripped);
-                $stripped = preg_replace('/"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"/', '""', $stripped);
-
+                // We MUST NOT wipe quoted strings here — the detection
+                // regex needs the literal 's3' to match. Instead, we only
+                // need to ignore strings that happen to contain an
+                // `Storage::disk('s3')->url(` substring, which essentially
+                // never happens in real code (it would mean a string
+                // containing the exact call text).
                 if (! preg_match('/Storage::disk\s*\(\s*[\'"]s3[\'"]\s*\)\s*->\s*url\s*\(/', $stripped)) {
                     continue;
                 }

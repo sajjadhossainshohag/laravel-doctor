@@ -46,13 +46,14 @@ class DeprecatedErrorApiCheck implements HealthCheck
                 $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
                 $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                // Extract the after() method body and only flag
-                // $this->error() that lives inside it. The previous
-                // version scanned the entire file and flagged any
-                // $this->error() call as long as the file also happened
-                // to contain an after() method, regardless of where the
-                // call lived.
-                if (! preg_match('/function\s+after\s*\([^)]*\)\s*\{(.*?)\n\s*\}/s', $stripped, $m)) {
+                // Extract the after() method body and only flag $this->error() that
+                // lives inside it. The previous version scanned the entire
+                // file and flagged any $this->error() call as long as the
+                // file also happened to contain an after() method,
+                // regardless of where the call lived. Allow an optional
+                // return type between ) and { so `function after(): void`
+                // stubs are detected.
+                if (! preg_match('/function\s+after\s*\([^)]*\)\s*(?::\s*[\\\\\w|&\[\]<>,\s]+)?\s*\{(.*?)\n\s*\}/s', $stripped, $m)) {
                     continue;
                 }
                 $afterBody = $m[1];

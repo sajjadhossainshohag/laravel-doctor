@@ -16,7 +16,7 @@ class SingletonAfterFirstResolveCheckTest extends TestCase
 
         $result = $check->run();
 
-        $this->assertCheckFailed($result, Severity::Info, 'singleton');
+        $this->assertCheckFailed($result, Severity::Warning, 'singleton');
     }
 
     /** @test */

@@ -53,8 +53,11 @@ class EarlyConfigAccessCheck implements HealthCheck
                 $content = file_get_contents($file->getRealPath());
 
                 // Extract just the register() method body (greedy match across newlines)
-                // so we don't false-positive on env() calls in boot() or other methods.
-                if (! preg_match('/function\s+register\s*\([^)]*\)\s*\{(.*?)\n\s*\}/s', $content, $m)) {
+                // so we don't false-positive on env() calls in boot() or other
+                // methods. Allow an optional return type between ) and { so
+                // modern `public function register(): void { ... }` stubs are
+                // not silently skipped.
+                if (! preg_match('/function\s+register\s*\([^)]*\)\s*(?::\s*[\\\\\w|&\[\]<>,\s]+)?\s*\{(.*?)\n\s*\}/s', $content, $m)) {
                     continue;
                 }
 

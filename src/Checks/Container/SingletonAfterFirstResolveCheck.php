@@ -78,10 +78,17 @@ class SingletonAfterFirstResolveCheck implements HealthCheck
                     continue;
                 }
 
-                if ($this->hasEarlyResolveInSameFile($stripped)) {
+                $singletonAbstract = $this->extractFirstSingletonAbstract($stripped);
+                if ($singletonAbstract === null) {
+                    // Could not determine the abstract — we can't verify
+                    // it's the same one being resolved in register().
+                    continue;
+                }
+
+                if ($this->resolveHitsAbstract($stripped, $singletonAbstract)) {
                     $locations[] = [
                         'file' => $realPath,
-                        'issue' => 'singleton() registered in boot() but the same file appears to resolve the abstract earlier',
+                        'issue' => "singleton('{$singletonAbstract}') registered in boot() but the same file appears to resolve the same abstract earlier in register()",
                         'value' => 'Move the singleton binding to register() to avoid double construction.',
                     ];
                 }
@@ -120,37 +127,165 @@ class SingletonAfterFirstResolveCheck implements HealthCheck
     }
 
     /**
-     * Detect in the same file a possible earlier resolve of an abstract that
-     * gets re-bound as a singleton in boot().
+     * Extract the abstract key from the first $this->app->singleton(...) call
+     * in boot(). The first argument may be a quoted string or ::class.
      */
-    private function hasEarlyResolveInSameFile(string $content): bool
+    private function extractFirstSingletonAbstract(string $content): ?string
+    {
+        $body = $this->extractMethodBody($content, 'boot');
+        if ($body === null) {
+            return null;
+        }
+        if (! preg_match('/\$this->app->singleton\s*\(/', $body, $m, PREG_OFFSET_CAPTURE)) {
+            return null;
+        }
+        // Position cursor AT the opening '(' so readBalancedParens works.
+        $start = $m[0][1] + strlen($m[0][0]) - 1;
+        $args = $this->readBalancedParens($body, $start);
+        if ($args === null) {
+            return null;
+        }
+        $parts = $this->splitTopLevelArgs($args);
+        $first = trim($parts[0] ?? '');
+        if ($first === '') {
+            return null;
+        }
+        if (preg_match('/^[\'"]([^\'"]+)[\'"]\s*$/', $first, $sm)) {
+            return $sm[1];
+        }
+        if (preg_match('/^([\w\\\\]+)::class\s*$/', $first, $cm)) {
+            return ltrim($cm[1], '\\');
+        }
+
+        return null;
+    }
+
+    /**
+     * Detect in the same file a possible earlier resolve of the given
+     * abstract. Looks only at register() — that's where providers
+     * typically resolve things, and anything resolved there is in the
+     * container before boot() runs.
+     */
+    private function resolveHitsAbstract(string $content, string $abstract): bool
     {
         $registerBody = $this->extractMethodBody($content, 'register') ?? '';
 
-        // If register() itself calls app()->make(...) or resolve(...) for
-        // an abstract, that abstract is already resolved by the time
-        // boot() runs.
-        if (preg_match('/\$this->app->(make|resolve)\s*\(/', $registerBody)) {
-            return true;
+        // $this->app->make('foo') / resolve('foo') / bound('foo')
+        // We only flag a match when the FIRST argument is a quoted string
+        // matching $abstract (case-insensitive, since make/resolve keys
+        // are usually lowercase). Without that, we'd over-flag every
+        // generic ->make() call.
+        $patterns = [
+            '/\$this->app->make\s*\(\s*[\'"]' . preg_quote($abstract, '/') . '[\'"]/',
+            '/\$this->app->resolve\s*\(\s*[\'"]' . preg_quote($abstract, '/') . '[\'"]/',
+            '/\$this->app->bound\s*\(\s*[\'"]' . preg_quote($abstract, '/') . '[\'"]/',
+        ];
+        foreach ($patterns as $p) {
+            if (preg_match($p, $registerBody)) {
+                return true;
+            }
         }
 
-        // If register() calls bind() for the same abstract that boot()
-        // re-binds as singleton(), the new binding in boot() is too late
-        // only if anything resolved the old binding between register()
-        // and boot(). We can't detect that statically, so we DON'T flag
-        // it (a duplicate bind+singleton for the same key is a different
-        // concern, not a "singleton-after-resolve" issue).
+        // Also catch ::class form: $this->app->make(Foo::class)
+        // Match the short class name against the abstract's last segment.
+        $abstractShort = strtolower(basename(str_replace('\\', '/', $abstract)));
+        if ($abstractShort !== '' && preg_match('/\$this->app->(?:make|resolve)\s*\(\s*[\w\\\\]+::class\s*\)/', $registerBody, $m)) {
+            // Extract the short class name from the first ::class match.
+            if (preg_match('/\$this->app->(?:make|resolve)\s*\(\s*([\w\\\\]+)::class\s*\)/', $registerBody, $cm)) {
+                $short = strtolower(basename(str_replace('\\', '/', $cm[1])));
+                if ($short === $abstractShort) {
+                    return true;
+                }
+            }
+        }
 
         return false;
     }
 
     private function extractMethodBody(string $content, string $method): ?string
     {
-        if (! preg_match('/function\s+'.preg_quote($method, '/').'\s*\([^)]*\)\s*\{(.*?)\n\s*\}/s', $content, $m)) {
+        // Allow optional return type between ) and { so modern
+        // `boot(): void` stubs are detected.
+        if (! preg_match('/function\s+'.preg_quote($method, '/').'\s*\([^)]*\)\s*(?::\s*[\\\\\w|&\[\]<>,\s]+)?\s*\{(.*?)\n\s*\}/s', $content, $m)) {
             return null;
         }
 
         return $m[1];
+    }
+
+    private function readBalancedParens(string $haystack, int $open): ?string
+    {
+        if (! isset($haystack[$open]) || $haystack[$open] !== '(') {
+            return null;
+        }
+        $depth = 0;
+        $i = $open;
+        $inString = false;
+        $stringChar = '';
+        $len = strlen($haystack);
+        while ($i < $len) {
+            $c = $haystack[$i];
+            if ($inString) {
+                if ($c === '\\') { $i += 2; continue; }
+                if ($c === $stringChar) { $inString = false; }
+            } else {
+                if ($c === '\'' || $c === '"') { $inString = true; $stringChar = $c; }
+                elseif ($c === '(') { $depth++; }
+                elseif ($c === ')') {
+                    $depth--;
+                    if ($depth === 0) {
+                        return substr($haystack, $open + 1, $i - $open - 1);
+                    }
+                }
+            }
+            $i++;
+        }
+
+        return null;
+    }
+
+    private function splitTopLevelArgs(string $args): array
+    {
+        $parts = [];
+        $depth = 0;
+        $bracketDepth = 0;
+        $inString = false;
+        $stringChar = '';
+        $current = '';
+        $len = strlen($args);
+        for ($i = 0; $i < $len; $i++) {
+            $c = $args[$i];
+            if ($inString) {
+                $current .= $c;
+                if ($c === '\\') { $current .= ($args[++$i] ?? ''); continue; }
+                if ($c === $stringChar) { $inString = false; }
+                continue;
+            }
+            if ($c === '\'' || $c === '"') { $inString = true; $stringChar = $c; $current .= $c; continue; }
+            if ($c === '(' || $c === '[') {
+                if ($c === '(') $depth++;
+                if ($c === '[') $bracketDepth++;
+                $current .= $c;
+                continue;
+            }
+            if ($c === ')' || $c === ']') {
+                if ($c === ')') $depth--;
+                if ($c === ']') $bracketDepth--;
+                $current .= $c;
+                continue;
+            }
+            if ($c === ',' && $depth === 0 && $bracketDepth === 0) {
+                $parts[] = $current;
+                $current = '';
+                continue;
+            }
+            $current .= $c;
+        }
+        if ($current !== '' || count($parts) > 0) {
+            $parts[] = $current;
+        }
+
+        return $parts;
     }
 
     private function isIgnored(string $path, array $patterns): bool

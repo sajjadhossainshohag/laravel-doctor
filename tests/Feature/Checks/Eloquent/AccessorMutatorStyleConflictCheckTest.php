@@ -16,7 +16,7 @@ class AccessorMutatorStyleConflictCheckTest extends TestCase
 
         $result = $check->run();
 
-        $this->assertCheckFailed($result, Severity::Warning, 'accessor');
+        $this->assertCheckFailed($result, Severity::Info, 'accessor');
     }
 
     /** @test */

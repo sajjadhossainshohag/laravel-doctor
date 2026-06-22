@@ -38,10 +38,13 @@ class CacheTagsOnUnsupportedDriverCheck implements HealthCheck
         $driver = config('cache.default', 'file');
 
         // Drivers that natively support tags via a TaggableStore subclass.
-        // ArrayStore, ApcStore, MemcachedStore, NullStore, RedisStore, FailoverStore
-        // all extend TaggableStore, so they support ->tags().
+        // ArrayStore, ApcStore, MemcachedStore, NullStore, RedisStore,
+        // FailoverStore all extend TaggableStore, so they support ->tags().
+        // DynamoDbStore ALSO supports tags (its ->tags() throws if the
+        // underlying cache is not TaggableStore, but DynamoDbStore itself
+        // is).
         $supportsTags = in_array($driver, [
-            'array', 'apc', 'memcached', 'redis', 'dynamodb',
+            'array', 'apc', 'memcached', 'redis', 'dynamodb', 'null', 'failover',
         ], true);
 
         if ($supportsTags) {
@@ -95,7 +98,7 @@ class CacheTagsOnUnsupportedDriverCheck implements HealthCheck
             passed: false,
             message: count($locations).' Cache::tags() call(s) on driver that does not support tags.',
             locations: $locations,
-            suggestion: 'Switch to a taggable driver (redis, memcached, array, apc, dynamodb) or remove tags() calls.',
+            suggestion: 'Switch to a taggable driver (redis, memcached, array, apc, dynamodb, null, failover) or remove tags() calls.',
         );
     }
 }

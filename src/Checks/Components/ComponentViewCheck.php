@@ -51,9 +51,29 @@ class ComponentViewCheck implements HealthCheck
                 continue;
             }
 
-            $viewName = method_exists($component, 'render')
-                ? $component->render()->name()
-                : null;
+            $viewName = null;
+
+            if (method_exists($component, 'render')) {
+                try {
+                    $rendered = $component->render();
+                } catch (\Throwable) {
+                    $rendered = null;
+                }
+
+                if ($rendered instanceof \Illuminate\Contracts\View\View) {
+                    $viewName = $rendered->name();
+                } elseif (is_string($rendered) && $rendered !== '') {
+                    // AnonymousComponent::render() returns the view name as
+                    // a string. Same for inline components.
+                    $viewName = $rendered;
+                } elseif ($rendered instanceof \Closure) {
+                    // DynamicComponent::render() returns a Closure that
+                    // produces a Blade template string. We can't extract a
+                    // single view name from that without invoking it, so
+                    // skip — it doesn't correspond to one canonical view.
+                    $viewName = null;
+                }
+            }
 
             if ($viewName && !View::exists($viewName)) {
                 $locations[] = [

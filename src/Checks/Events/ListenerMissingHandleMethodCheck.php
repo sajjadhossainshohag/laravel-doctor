@@ -43,32 +43,70 @@ class ListenerMissingHandleMethodCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                if (! preg_match('/class\s+(\w+)/', $stripped, $m)) {
+                // Try to resolve the FQCN for reflection. We look at the
+                // first `class X` declaration in the file plus its
+                // namespace + use imports, so a subclass that inherits
+                // `handle()` from a base class is correctly detected.
+                if (! preg_match_all('/^\s*(?:final\s+|abstract\s+)?(?:readonly\s+)?class\s+(\w+)/m', $content, $classMatches)) {
                     continue;
                 }
-                $className = $m[1];
-
-                // A listener only needs handle() if it doesn't use one of
-                // Laravel's other listener dispatch mechanisms:
-                //   - subscribe() method → it is an event subscriber
-                //     (Laravel routes by the events returned by subscribe())
-                //   - __invoke() method  → invokable listener
-                //   - handle() method   → standard listener
-                $hasHandle = (bool) preg_match('/function\s+handle\s*\(/', $stripped);
-                $hasInvoke = (bool) preg_match('/function\s+__invoke\s*\(/', $stripped);
-                $hasSubscribe = (bool) preg_match('/function\s+subscribe\s*\(/', $stripped);
-
-                if ($hasHandle || $hasInvoke || $hasSubscribe) {
-                    continue;
+                $namespaces = [];
+                preg_match_all('/^\s*namespace\s+([\w\\\\]+)\s*;/m', $content, $nsMatches);
+                foreach ($nsMatches[1] as $ns) {
+                    $namespaces[] = $ns;
+                }
+                $uses = [];
+                if (preg_match_all('/^\s*use\s+([\w\\\\]+)(?:\s+as\s+(\w+))?\s*;/m', $content, $useMatches)) {
+                    foreach ($useMatches[1] as $i => $fqcn) {
+                        $alias = $useMatches[2][$i] ?? null;
+                        $short = $alias ?? basename(str_replace('\\', '/', $fqcn));
+                        $uses[$short] = ltrim($fqcn, '\\');
+                    }
                 }
 
-                $locations[] = [
-                    'file' => $file->getRealPath(),
-                    'issue' => "Listener '{$className}' has no handle(), __invoke(), or subscribe() method",
-                ];
+                foreach ($classMatches[1] as $shortClass) {
+                    $fqcn = $uses[$shortClass] ?? null;
+                    if ($fqcn === null) {
+                        foreach ($namespaces as $ns) {
+                            $candidate = $ns.'\\'.$shortClass;
+                            if (class_exists($candidate)) {
+                                $fqcn = $candidate;
+                                break;
+                            }
+                        }
+                    }
+                    if ($fqcn === null || ! class_exists($fqcn)) {
+                        continue;
+                    }
+
+                    try {
+                        $reflection = new \ReflectionClass($fqcn);
+                    } catch (\Throwable) {
+                        continue;
+                    }
+                    if ($reflection->isAbstract() || $reflection->isTrait()) {
+                        continue;
+                    }
+
+                    // A listener only needs ONE of Laravel's dispatch
+                    // mechanisms — and any of them may be inherited from a
+                    // base class or trait. Use reflection-based detection so
+                    // `class Foo extends BaseFoo { }` (where BaseFoo has
+                    // handle()) is correctly recognized.
+                    $hasHandle = $reflection->hasMethod('handle');
+                    $hasInvoke = $reflection->hasMethod('__invoke');
+                    $hasSubscribe = $reflection->hasMethod('subscribe');
+
+                    if ($hasHandle || $hasInvoke || $hasSubscribe) {
+                        continue;
+                    }
+
+                    $locations[] = [
+                        'file' => $file->getRealPath(),
+                        'issue' => "Listener '{$shortClass}' has no handle(), __invoke(), or subscribe() method (checked via reflection, including inheritance)",
+                    ];
+                }
             }
         }
 
