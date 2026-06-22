@@ -51,12 +51,31 @@ class JobTriesZeroCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match('/public\s+\$tries\s*=\s*0\s*;/', $content)) {
-                    $locations[] = [
-                        'file' => $file->getRealPath(),
-                        'issue' => 'Job $tries is set to 0 — job will not retry on failure',
-                    ];
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+                if (! preg_match('/(?:public|protected|private)\s+\$tries\s*=\s*0\s*;/', $stripped)) {
+                    continue;
                 }
+
+                // In Laravel, $tries = 0 means "retry forever" (unlimited
+                // attempts) — a documented and valid pattern, but it
+                // requires either retryUntil() or backoff() to define
+                // when the loop ends. If neither is declared, the job
+                // will loop indefinitely and the user likely intended
+                // a positive number.
+                $hasRetryUntil = (bool) preg_match('/function\s+retryUntil\s*\(/', $stripped);
+                $hasBackoff = (bool) preg_match('/(?:public|protected|private)\s+\$backoff\s*=/', $stripped);
+
+                if ($hasRetryUntil || $hasBackoff) {
+                    // $tries = 0 is intentional — no warning.
+                    continue;
+                }
+
+                $locations[] = [
+                    'file' => $file->getRealPath(),
+                    'issue' => 'Job $tries is set to 0 with no retryUntil()/backoff() — job will retry forever, which is rarely intended',
+                ];
             }
         }
 
@@ -75,9 +94,9 @@ class JobTriesZeroCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' job(s) with $tries = 0.',
+            message: count($locations).' job(s) with $tries = 0 and no retry/backoff cap.',
             locations: $locations,
-            suggestion: 'Set $tries to a positive integer (e.g., 3) or remove the property to use the default.',
+            suggestion: 'Set $tries to a positive integer (e.g. 3), or add a retryUntil()/backoff() to cap the retries.',
         );
     }
 }

@@ -31,15 +31,29 @@ class DuplicateUrisCheck implements HealthCheck
         $locations = [];
 
         foreach ($routes as $route) {
-            $key = $route->uri() . '|' . implode('|', $route->methods());
+            // Include domain and scheme in the key so routes that are
+            // distinct on a subdomain (e.g. /api on the main app vs
+            // /api on the admin app) aren't flagged as duplicates.
+            $methods = $route->methods();
+            if (in_array('GET', $methods, true) && in_array('HEAD', $methods, true)) {
+                $methods = array_values(array_diff($methods, ['HEAD']));
+            }
+            sort($methods);
+            $key = implode('|', $methods)
+                . '|' . ($route->getDomain() ?? '')
+                . '|' . $route->uri();
+
             if (isset($map[$key])) {
                 $locations[] = [
                     'uri' => $route->uri(),
                     'method' => implode('|', $route->methods()),
+                    'domain' => $route->getDomain() ?? '',
                     'name' => $route->getName() ?? '(unnamed)',
+                    'issue' => 'Route is shadowed by an earlier route with the same URI + method + domain — the earlier route will be matched first',
                 ];
+            } else {
+                $map[$key] = true;
             }
-            $map[$key] = true;
         }
 
         if (empty($locations)) {
@@ -48,7 +62,7 @@ class DuplicateUrisCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'No duplicate URI + method combinations found.',
+                message: 'No duplicate URI + method + domain combinations found.',
             );
         }
 
@@ -57,8 +71,9 @@ class DuplicateUrisCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations) . ' duplicate URI(s) detected.',
+            message: count($locations) . ' duplicate route(s) detected.',
             locations: $locations,
+            suggestion: 'Combine the duplicate routes, give one of them a different URI/method, or remove the duplicate definition.',
         );
     }
 }

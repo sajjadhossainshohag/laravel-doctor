@@ -43,8 +43,20 @@ class DeprecatedErrorApiCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match('/function\s+after\s*\(/', $content) &&
-                    preg_match('/\$this->error\s*\(/', $content)) {
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+                // Extract the after() method body and only flag
+                // $this->error() that lives inside it. The previous
+                // version scanned the entire file and flagged any
+                // $this->error() call as long as the file also happened
+                // to contain an after() method, regardless of where the
+                // call lived.
+                if (! preg_match('/function\s+after\s*\([^)]*\)\s*\{(.*?)\n\s*\}/s', $stripped, $m)) {
+                    continue;
+                }
+                $afterBody = $m[1];
+                if (preg_match('/\$this->error\s*\(/', $afterBody)) {
                     $locations[] = [
                         'file' => $file->getRealPath(),
                         'issue' => 'after() hook calls $this->error() (L10 API) instead of $validator->errors()->add()',

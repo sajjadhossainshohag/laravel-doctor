@@ -57,6 +57,16 @@ class UnregisteredMiddlewareCheck implements HealthCheck
         $registeredAliases = $this->extractMiddlewareAliases($appContent);
         $registeredGroups = $this->extractMiddlewareGroups($appContent);
 
+        // Built-in middleware aliases always available in Laravel 10+/11+,
+        // whether or not the user has registered them explicitly.
+        $builtinAliases = [
+            'auth', 'auth.basic', 'auth.session', 'cache.headers',
+            'can', 'guest', 'password.confirm', 'precognitive',
+            'signed', 'subscribed', 'throttle', 'verified',
+        ];
+        // Built-in middleware group names.
+        $builtinGroups = ['web', 'api'];
+
         foreach ($this->scanPaths ?: config('doctor.scan_paths', [app_path()]) as $path) {
             if (! is_dir($path)) {
                 continue;
@@ -72,23 +82,30 @@ class UnregisteredMiddlewareCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match('/->middleware\s*\(\s*[\'"]([a-z0-9_.-]+)[\'"]/', $content, $m)) {
-                    $alias = $m[1];
-                    $base = explode(':', $alias, 2)[0];
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                    // Built-in middleware group names are always available.
-                    $builtin = ['web', 'api', 'auth', 'guest'];
+                // Strip string literals so we don't flag commented or quoted
+                // middleware aliases.
+                $stripped = preg_replace("/'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'/", "''", $stripped);
+                $stripped = preg_replace('/"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"/', '""', $stripped);
 
-                    $known = in_array($base, $builtin, true)
-                        || in_array($alias, $registeredAliases, true)
-                        || in_array($base, $registeredGroups, true)
-                        || class_exists($base);
+                if (preg_match_all('/->middleware\s*\(\s*[\'"]([a-z0-9_.-]+)[\'"]/', $stripped, $m)) {
+                    foreach ($m[1] as $alias) {
+                        $base = explode(':', $alias, 2)[0];
 
-                    if (! $known) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'issue' => "Middleware alias '{$alias}' is not registered in bootstrap/app.php",
-                        ];
+                        $known = in_array($base, $builtinAliases, true)
+                            || in_array($alias, $registeredAliases, true)
+                            || in_array($base, $builtinGroups, true)
+                            || in_array($base, $registeredGroups, true)
+                            || class_exists($base);
+
+                        if (! $known) {
+                            $locations[] = [
+                                'file' => $file->getRealPath(),
+                                'issue' => "Middleware alias '{$alias}' is not registered in bootstrap/app.php",
+                            ];
+                        }
                     }
                 }
             }
@@ -125,12 +142,18 @@ class UnregisteredMiddlewareCheck implements HealthCheck
     {
         $aliases = [];
 
-        // Form 1: ->alias('foo', Bar::class)
         if (preg_match_all('/->alias\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,/', $content, $m)) {
             $aliases = array_merge($aliases, $m[1]);
         }
 
-        // Form 2: ->aliases(['foo' => Bar::class, ...])
+        if (preg_match_all('/->alias\s*\(\s*\[(.*?)\]\s*\)/s', $content, $m2)) {
+            foreach ($m2[1] as $block) {
+                if (preg_match_all('/[\'"]([a-z0-9_.-]+)[\'"]\s*=>/i', $block, $m3)) {
+                    $aliases = array_merge($aliases, $m3[1]);
+                }
+            }
+        }
+
         if (preg_match_all('/->aliases\s*\(\s*\[(.*?)\]\s*\)/s', $content, $m2)) {
             foreach ($m2[1] as $block) {
                 if (preg_match_all('/[\'"]([a-z0-9_.-]+)[\'"]\s*=>/i', $block, $m3)) {
@@ -143,9 +166,7 @@ class UnregisteredMiddlewareCheck implements HealthCheck
     }
 
     /**
-     * Parse bootstrap/app.php to extract middleware group names registered via
-     * ->appendToGroup('group', ...) / ->prependToGroup('group', ...) / $middleware->web(...)
-     * or ->group('group', [...]).
+     * Parse bootstrap/app.php to extract middleware group names.
      *
      * @return array<int, string>
      */
@@ -153,13 +174,10 @@ class UnregisteredMiddlewareCheck implements HealthCheck
     {
         $groups = [];
 
-        // Forms:
-        //   ->appendToGroup('web', ...) / ->prependToGroup('web', ...)
         if (preg_match_all('/->(?:appendToGroup|prependToGroup)\s*\(\s*[\'"]([^\'"]+)[\'"]/', $content, $m)) {
             $groups = array_merge($groups, $m[1]);
         }
 
-        //   ->group('web', [...]) / $middleware->web([...])
         if (preg_match_all('/->group\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,/', $content, $m2)) {
             $groups = array_merge($groups, $m2[1]);
         }

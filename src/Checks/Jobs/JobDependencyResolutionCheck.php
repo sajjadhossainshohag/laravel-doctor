@@ -10,7 +10,7 @@ class JobDependencyResolutionCheck implements HealthCheck
 {
     public function name(): string
     {
-        return 'Job Dependency Resolution';
+        return 'Job Constructor Unserializable Parameter';
     }
 
     public function category(): string
@@ -27,6 +27,13 @@ class JobDependencyResolutionCheck implements HealthCheck
     {
         $locations = [];
         $declared = get_declared_classes();
+
+        // Job constructor parameters are serialized into the queue payload
+        // and rehydrated by the worker. They are NOT container-resolved at
+        // construction time, so trying to `app()->make()` them is wrong.
+        // Instead, we verify each constructor parameter has a type that
+        // can be safely serialized (scalar / array / object that exists
+        // at runtime) and is not a Closure / resource.
 
         foreach ($declared as $class) {
             if (!is_subclass_of($class, 'Illuminate\Contracts\Queue\ShouldQueue')) {
@@ -45,19 +52,23 @@ class JobDependencyResolutionCheck implements HealthCheck
                 }
 
                 foreach ($constructor->getParameters() as $param) {
+                    if ($param->isDefaultValueAvailable()) {
+                        continue;
+                    }
                     $type = $param->getType();
-                    if ($type && !$type->isBuiltin()) {
-                        $typeName = $type->getName();
-                        try {
-                            app()->make($typeName);
-                        } catch (\Throwable $e) {
-                            $locations[] = [
-                                'job' => $class,
-                                'parameter' => $param->getName(),
-                                'type' => $typeName,
-                                'issue' => 'Cannot resolve dependency: ' . $e->getMessage(),
-                            ];
-                        }
+                    if (! $type) {
+                        continue;
+                    }
+
+                    $typeName = $type->getName();
+                    // Closure and resource are inherently unserializable.
+                    if ($typeName === 'Closure') {
+                        $locations[] = [
+                            'job' => $class,
+                            'parameter' => $param->getName(),
+                            'type' => $typeName,
+                            'issue' => 'Job constructor parameter is typed as Closure — Closures cannot be serialized into the queue payload',
+                        ];
                     }
                 }
             } catch (\Throwable) {
@@ -71,7 +82,7 @@ class JobDependencyResolutionCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'All job constructor dependencies are resolvable.',
+                message: 'All job constructor parameters are serializable.',
             );
         }
 
@@ -80,8 +91,9 @@ class JobDependencyResolutionCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations) . ' job dependency(ies) not resolvable.',
+            message: count($locations) . ' job constructor parameter(s) cannot be serialized into a queue payload.',
             locations: $locations,
+            suggestion: 'Use serializable types in job constructor parameters (scalars, arrays, model ids).',
         );
     }
 }

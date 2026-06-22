@@ -29,11 +29,17 @@ class EnvExampleMismatchCheck implements HealthCheck
         $envExampleKeys = array_keys($this->parseEnvFile(base_path('.env.example')));
         $locations = [];
 
-        $missingFromExample = array_diff($envKeys, $envExampleKeys);
-        foreach ($missingFromExample as $key) {
+        // The direction that actually indicates a configuration problem is
+        // the reverse of what the old check did: a key listed in
+        // .env.example but missing from .env means the developer's
+        // .env has not been updated to declare a value for a key the
+        // application expects. Keys present in .env but absent from
+        // .env.example are often intentional (local-only).
+        $missingFromEnv = array_diff($envExampleKeys, $envKeys);
+        foreach ($missingFromEnv as $key) {
             $locations[] = [
                 'key' => $key,
-                'issue' => 'Present in .env but missing from .env.example',
+                'issue' => 'Present in .env.example but missing from .env',
             ];
         }
 
@@ -43,7 +49,7 @@ class EnvExampleMismatchCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: '.env and .env.example are in sync.',
+                message: '.env declares every key that .env.example documents.',
             );
         }
 
@@ -52,9 +58,9 @@ class EnvExampleMismatchCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations) . ' key(s) in .env missing from .env.example.',
+            message: count($locations) . ' key(s) in .env.example missing from .env.',
             locations: $locations,
-            suggestion: 'Add the missing key(s) to .env.example with placeholder values.',
+            suggestion: 'Add the missing key(s) to .env (with a local value) so the application can read them.',
         );
     }
 

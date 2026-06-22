@@ -27,6 +27,23 @@ class ForeignKeyCheck implements HealthCheck
 
     public function run(): CheckResult
     {
+        $driver = DB::connection()->getDriverName();
+
+        // Only MySQL exposes information_schema in the way this check
+        // queries it. For other drivers we surface an explicit info
+        // message instead of silently passing — the old behavior hid the
+        // fact that the check wasn't actually running.
+        $supported = ['mysql', 'mariadb'];
+        if (! in_array($driver, $supported, true)) {
+            return new CheckResult(
+                check: $this->name(),
+                category: $this->category(),
+                severity: $this->severity(),
+                passed: true,
+                message: "Foreign key integrity checks are not implemented for the '{$driver}' driver — only MySQL/MariaDB information_schema is queried.",
+            );
+        }
+
         try {
             $tables = Schema::getAllTables();
         } catch (\BadMethodCallException) {
@@ -35,7 +52,7 @@ class ForeignKeyCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'Foreign key checks are not supported on this database driver.',
+                message: "Foreign key checks are not supported on the '{$driver}' driver (getAllTables not available).",
             );
         }
 
@@ -92,6 +109,7 @@ class ForeignKeyCheck implements HealthCheck
             passed: false,
             message: count($locations) . ' foreign key issue(s) found.',
             locations: $locations,
+            suggestion: 'Add the referenced table/column or remove the foreign key constraint.',
         );
     }
 }

@@ -52,11 +52,21 @@ class ConfigCacheIncompatibleValuesCheck implements HealthCheck
 
                 $content = file_get_contents($file->getRealPath());
 
-                // Match arrow-function assignments:  'key' => fn (...) => ...
-                // OR closure assignments:           'key' => function (...) { ... }
-                // Both forms assign a Closure to a config key, which breaks config:cache.
-                $hasArrowFnAssign = preg_match('/=>\s*fn\s*\(/', $content);
-                $hasClosureAssign = preg_match('/=>\s*function\s*\(/', $content);
+                // Only flag when an arrow function or anonymous function is
+                // being assigned to a top-level config array key, i.e. the
+                // pattern  'key' => function (...) { ... }  or  "key" => fn(...) => ...
+                //
+                // To avoid matching commented-out code or strings, strip PHP line
+                // comments, block comments and Blade comments first.
+                $stripped = $this->stripComments($content);
+
+                // Top-level config files are PHP files whose entire body is a
+                // single array literal assigned via `return [...]`. We look for
+                //  KEY => function() { ... }
+                // or  KEY => fn(...)
+                // inside the return array.
+                $hasArrowFnAssign = preg_match('/[\'"][^\'"]+[\'"]\s*=>\s*fn\s*\(/', $stripped);
+                $hasClosureAssign = preg_match('/[\'"][^\'"]+[\'"]\s*=>\s*function\s*\(/', $stripped);
 
                 if ($hasArrowFnAssign || $hasClosureAssign) {
                     $locations[] = [
@@ -86,5 +96,19 @@ class ConfigCacheIncompatibleValuesCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Move Closures to a service provider or use serializable values only.',
         );
+    }
+
+    private function stripComments(string $content): string
+    {
+        // Strip Blade comments.
+        $content = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
+        // Strip PHP block comments.
+        $content = preg_replace('#/\*.*?\*/#s', '', $content);
+        // Strip PHP line comments.
+        $content = preg_replace('!//[^\n]*!', '', $content);
+        // Strip hash line comments (PHP-style config files).
+        $content = preg_replace('/^\s*#[^\n]*$/m', '', $content);
+
+        return $content;
     }
 }

@@ -20,7 +20,7 @@ class S3UrlWithoutConfigCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Warning;
+        return Severity::Info;
     }
 
     public function run(): CheckResult
@@ -29,7 +29,9 @@ class S3UrlWithoutConfigCheck implements HealthCheck
         $paths = config('doctor.scan_paths', [app_path(), resource_path('views')]);
 
         $s3Config = config('filesystems.disks.s3');
-        $s3Configured = ! empty($s3Config['key']) && ! empty($s3Config['secret']) && ! empty($s3Config['bucket']);
+        $hasBucket = ! empty($s3Config['bucket']);
+        $hasRegion = ! empty($s3Config['region']);
+        $hasExplicitCreds = ! empty($s3Config['key']) && ! empty($s3Config['secret']);
 
         foreach ($paths as $path) {
             if (! is_dir($path)) {
@@ -46,14 +48,35 @@ class S3UrlWithoutConfigCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match('/Storage::disk\s*\(\s*[\'"]s3[\'"]\s*\)\s*->\s*url\s*\(/', $content)) {
-                    if (! $s3Configured) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'issue' => 'Storage::disk(\'s3\')->url() called but S3 is not fully configured',
-                        ];
-                    }
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+                // Strip quoted strings so we don't flag commented or
+                // documented S3 calls.
+                $stripped = preg_replace("/'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'/", "''", $stripped);
+                $stripped = preg_replace('/"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"/', '""', $stripped);
+
+                if (! preg_match('/Storage::disk\s*\(\s*[\'"]s3[\'"]\s*\)\s*->\s*url\s*\(/', $stripped)) {
+                    continue;
                 }
+
+                // The S3 disk may legitimately be used without explicit
+                // key/secret when the application runs on AWS and picks
+                // up IAM role credentials via the default credential
+                // provider chain. We only flag when bucket or region
+                // is missing — those are always required.
+                if (! $hasBucket || ! $hasRegion) {
+                    $missing = [];
+                    if (! $hasBucket) { $missing[] = 'bucket'; }
+                    if (! $hasRegion) { $missing[] = 'region'; }
+                    $locations[] = [
+                        'file' => $file->getRealPath(),
+                        'issue' => "Storage::disk('s3')->url() called but S3 is missing required config: ".implode(', ', $missing),
+                    ];
+                }
+                // If key/secret are missing but bucket/region are present,
+                // the app may be using IAM/instance role credentials —
+                // that's valid. Don't flag.
             }
         }
 
@@ -63,7 +86,7 @@ class S3UrlWithoutConfigCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'No S3 URL calls without configuration detected.',
+                message: 'All S3 URL calls have the required bucket and region configured.',
             );
         }
 
@@ -72,9 +95,9 @@ class S3UrlWithoutConfigCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' S3 url() call(s) with incomplete S3 configuration.',
+            message: count($locations).' S3 url() call(s) without required bucket/region.',
             locations: $locations,
-            suggestion: 'Configure the S3 disk in config/filesystems.php or use a different disk.',
+            suggestion: 'Set the s3.bucket and s3.region values in config/filesystems.php.',
         );
     }
 }

@@ -21,7 +21,7 @@ class MissingExtendsCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Error;
+        return Severity::Warning;
     }
 
     public function run(): CheckResult
@@ -45,7 +45,9 @@ class MissingExtendsCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                preg_match_all('/@extends\([\'"]([^\'"]+)[\'"]\)/', $content, $matches);
+                $stripped = $this->stripComments($content);
+
+                preg_match_all('/@extends\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $matches);
 
                 foreach ($matches[1] as $layoutName) {
                     if (!View::exists($layoutName)) {
@@ -77,5 +79,14 @@ class MissingExtendsCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Create the missing layout or correct the @extends path.',
         );
+    }
+
+    private function stripComments(string $content): string
+    {
+        $content = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
+        $content = preg_replace('#/\*.*?\*/#s', '', $content);
+        $content = preg_replace('!//[^\n]*!', '', $content);
+
+        return $content;
     }
 }

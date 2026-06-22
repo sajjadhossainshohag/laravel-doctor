@@ -20,7 +20,7 @@ class MailableVariableMismatchCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Warning;
+        return Severity::Info;
     }
 
     public function run(): CheckResult
@@ -43,15 +43,16 @@ class MailableVariableMismatchCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                // Collect variables passed via BOTH syntaxes:
-                //  - legacy:  ->with('name', $value)
-                //  - modern:  ->with(['name' => $value, ...])
                 $withVars = [];
-                if (preg_match_all('/->with\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,/', $content, $m1)) {
+                // ->with('name', $value) — single string key
+                if (preg_match_all('/->\s*with\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,/', $stripped, $m1)) {
                     $withVars = array_merge($withVars, $m1[1]);
                 }
-                if (preg_match_all('/->with\s*\(\s*\[(.*?)\]\s*\)/s', $content, $m2)) {
+                // ->with(['name' => $value, ...])
+                if (preg_match_all('/->\s*with\s*\(\s*\[(.*?)\]\s*\)/s', $stripped, $m2)) {
                     foreach ($m2[1] as $block) {
                         if (preg_match_all('/[\'"]([a-zA-Z_][a-zA-Z0-9_]*)[\'"]\s*=>/', $block, $m3)) {
                             $withVars = array_merge($withVars, $m3[1]);
@@ -63,11 +64,12 @@ class MailableVariableMismatchCheck implements HealthCheck
                     continue;
                 }
 
-                if (! preg_match('/->view\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $content, $viewM)) {
+                // Find any view reference in the mailable.
+                $viewName = $this->firstViewName($stripped);
+                if ($viewName === null) {
                     continue;
                 }
 
-                $viewName = $viewM[1];
                 $viewPath = $this->resolveViewPath($viewName);
                 if (! $viewPath) {
                     continue;
@@ -75,11 +77,17 @@ class MailableVariableMismatchCheck implements HealthCheck
 
                 $viewContent = file_get_contents($viewPath);
 
+                // Resolve all @include / @component subviews from the
+                // main view and union their content so a variable used
+                // inside a partial is still considered used.
+                $subviewContents = $this->collectSubviewContents($viewContent);
+                $combined = $viewContent."\n".implode("\n", $subviewContents);
+
                 foreach ($withVars as $var) {
-                    if (! $this->variableUsedInView($viewContent, $var)) {
+                    if (! $this->variableUsedInView($combined, $var)) {
                         $locations[] = [
                             'file' => $file->getRealPath(),
-                            'issue' => "Variable '\${$var}' passed to view but not used in '{$viewName}'",
+                            'issue' => "Variable '\${$var}' passed to view but not used in '{$viewName}' or its included partials",
                         ];
                     }
                 }
@@ -92,7 +100,7 @@ class MailableVariableMismatchCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'All mailable variables match their templates.',
+                message: 'All mailable variables are referenced in their templates.',
             );
         }
 
@@ -100,11 +108,20 @@ class MailableVariableMismatchCheck implements HealthCheck
             check: $this->name(),
             category: $this->category(),
             severity: $this->severity(),
-            passed: false,
-            message: count($locations).' variable/template mismatch(es) detected.',
+            passed: true,
+            message: count($locations).' mailable variable(s) appear unused in the template (and any included partials). This is informational — variables may be consumed by view composers or third-party listeners.',
             locations: $locations,
-            suggestion: 'Ensure all ->with() variables are referenced in the corresponding Blade template.',
         );
+    }
+
+    private function firstViewName(string $content): ?string
+    {
+        foreach (['view', 'html', 'text', 'markdown'] as $method) {
+            if (preg_match('/->\s*'.preg_quote($method, '/').'\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $content, $m)) {
+                return $m[1];
+            }
+        }
+        return null;
     }
 
     private function resolveViewPath(string $view): ?string
@@ -122,6 +139,37 @@ class MailableVariableMismatchCheck implements HealthCheck
     }
 
     /**
+     * Recursively collect the contents of any @include('...') partials
+     * referenced from this view, so a variable used inside a partial is
+     * still considered "used".
+     *
+     * @return list<string>
+     */
+    private function collectSubviewContents(string $viewContent, int $depth = 0): array
+    {
+        if ($depth > 5) {
+            return [];
+        }
+        $contents = [];
+        if (preg_match_all('/@include\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $viewContent, $m)) {
+            $hints = config('view.paths', [resource_path('views')]);
+            foreach ($m[1] as $name) {
+                $path = str_replace('.', '/', $name);
+                foreach ($hints as $hint) {
+                    $candidate = $hint.'/'.$path.'.blade.php';
+                    if (file_exists($candidate)) {
+                        $sub = file_get_contents($candidate);
+                        $contents[] = $sub;
+                        $contents = array_merge($contents, $this->collectSubviewContents($sub, $depth + 1));
+                        break;
+                    }
+                }
+            }
+        }
+        return $contents;
+    }
+
+    /**
      * Detect whether $var is actually used inside the Blade view, considering:
      *   - direct:        {{ $var }}
      *   - array access:  {{ $var['key'] }} / @foreach($var as ...)
@@ -130,22 +178,15 @@ class MailableVariableMismatchCheck implements HealthCheck
      */
     private function variableUsedInView(string $viewContent, string $var): bool
     {
-        // Direct reference: $var followed by a non-word char (so we don't catch $variableLonger)
         if (preg_match('/\$' . preg_quote($var, '/') . '(?!\w)/', $viewContent)) {
             return true;
         }
-
-        // {{ $var }} / {{{ $var }}}
         if (preg_match('/\{\{[^}]*\$' . preg_quote($var, '/') . '(?!\w)/', $viewContent)) {
             return true;
         }
-
-        // @isset($var) / @empty($var)
         if (preg_match('/@(?:isset|empty)\s*\(\s*\$' . preg_quote($var, '/') . '\b/', $viewContent)) {
             return true;
         }
-
-        // @foreach($var as ...) / @forelse($var as ...)
         if (preg_match('/@(?:foreach|forelse)\s*\(\s*\$' . preg_quote($var, '/') . '\b/', $viewContent)) {
             return true;
         }

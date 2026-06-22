@@ -2,7 +2,9 @@
 
 namespace SajjadHossain\Doctor\Checks\Schema;
 
+use Illuminate\Contracts\Database\Eloquent\Castable;
 use Illuminate\Contracts\Database\Eloquent\CastsAttributes;
+use Illuminate\Contracts\Database\Eloquent\CastsInboundAttributes;
 use Illuminate\Database\Eloquent\Model;
 use SajjadHossain\Doctor\Contracts\HealthCheck;
 use SajjadHossain\Doctor\DTOs\CheckResult;
@@ -30,13 +32,32 @@ class InvalidCastsCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Error;
+        return Severity::Warning;
     }
 
     public function run(): CheckResult
     {
         $locations = [];
-        $declared = $this->modelClasses ?: get_declared_classes();
+        $declared = $this->discoverModels();
+
+        // Built-in casts (Laravel 9+). 'real' is an alias for 'float' on
+        // some platforms, but we include it for safety.
+        $builtIn = [
+            'array', 'boolean', 'bool', 'collection', 'date', 'datetime',
+            'decimal', 'double', 'encrypted', 'encrypted:array',
+            'encrypted:collection', 'encrypted:object', 'float', 'hashed',
+            'integer', 'int', 'json', 'object', 'real', 'string',
+            'timestamp', 'immutable_date', 'immutable_datetime',
+            'custom_datetime', 'Illuminate\Database\Eloquent\Casts\AsArrayObject',
+            'Illuminate\Database\Eloquent\Casts\AsCollection',
+            'Illuminate\Database\Eloquent\Casts\AsEnumArrayObject',
+            'Illuminate\Database\Eloquent\Casts\AsEnumCollection',
+            'Illuminate\Database\Eloquent\Casts\AsStringable',
+            'Illuminate\Database\Eloquent\Casts\AsHash',
+            'Illuminate\Database\Eloquent\Casts\AsUri',
+            'Illuminate\Database\Eloquent\Casts\AsUrl',
+            'Illuminate\Database\Eloquent\Casts\AsImage',
+        ];
 
         foreach ($declared as $class) {
             if (!is_subclass_of($class, Model::class)) {
@@ -45,7 +66,7 @@ class InvalidCastsCheck implements HealthCheck
 
             try {
                 $reflection = new \ReflectionClass($class);
-                if ($reflection->isAbstract()) {
+                if ($reflection->isAbstract() || $reflection->isTrait()) {
                     continue;
                 }
 
@@ -53,32 +74,65 @@ class InvalidCastsCheck implements HealthCheck
                 $casts = $model->getCasts();
 
                 foreach ($casts as $column => $cast) {
-                    // Check built-in types FIRST — before class_exists() — because PHP
-                    // class_exists() is case-insensitive and would match "datetime" → DateTime
-                    $builtIn = ['array', 'boolean', 'bool', 'collection', 'date', 'datetime',
-                        'decimal', 'double', 'encrypted', 'float', 'hashed', 'integer', 'int',
-                        'json', 'object', 'real', 'string', 'timestamp', 'immutable_date',
-                        'immutable_datetime', 'custom_datetime', ];
+                    // Cast definition may be a string 'classname' or 'classname:arg'.
+                    // $cast may also be a real class object (Castable returns
+                    // the cast class instance via the casts array).
+                    if (is_object($cast)) {
+                        // A Castable returns its underlying cast instance.
+                        if ($cast instanceof CastsAttributes || $cast instanceof CastsInboundAttributes) {
+                            continue;
+                        }
+                        $locations[] = [
+                            'model' => $class,
+                            'column' => $column,
+                            'cast' => $cast::class,
+                            'issue' => 'Cast value does not implement CastsAttributes or CastsInboundAttributes',
+                        ];
+                        continue;
+                    }
 
-                    // Strip precision parameter (e.g. "decimal:2" → "decimal")
-                    $baseCast = explode(':', $cast, 2)[0];
+                    if (! is_string($cast)) {
+                        $locations[] = [
+                            'model' => $class,
+                            'column' => $column,
+                            'cast' => (string) $cast,
+                            'issue' => 'Cast value is not a string or cast instance',
+                        ];
+                        continue;
+                    }
+
+                    // Strip the :argument portion (e.g. "decimal:2",
+                    // "App\Casts\Money:USD"). We use it later to confirm
+                    // the class is valid even with arguments.
+                    $parts = explode(':', $cast, 2);
+                    $baseCast = $parts[0];
+                    $castArgs = $parts[1] ?? null;
 
                     if (in_array($baseCast, $builtIn, true)) {
                         continue;
                     }
 
-                    if (enum_exists($cast)) {
+                    // Enums: BackedEnum subclasses are valid cast targets.
+                    if (enum_exists($baseCast)) {
                         continue;
                     }
 
-                    if (class_exists($cast)) {
-                        $implements = class_implements($cast);
-                        if (!in_array(CastsAttributes::class, $implements ?: [], true)) {
+                    if (class_exists($baseCast)) {
+                        $implements = class_implements($baseCast);
+                        $valid = in_array(CastsAttributes::class, $implements ?: [], true)
+                            || in_array(CastsInboundAttributes::class, $implements ?: [], true);
+                        if (! $valid) {
+                            // Castable is acceptable: Laravel resolves
+                            // Castable::castUsing() to obtain the actual
+                            // cast class.
+                            $valid = in_array(Castable::class, $implements ?: [], true);
+                        }
+                        if (! $valid) {
                             $locations[] = [
                                 'model' => $class,
                                 'column' => $column,
                                 'cast' => $cast,
-                                'issue' => 'Cast class does not implement CastsAttributes',
+                                'issue' => 'Cast class does not implement CastsAttributes, CastsInboundAttributes, or Castable',
                             ];
                         }
                         continue;
@@ -113,6 +167,16 @@ class InvalidCastsCheck implements HealthCheck
             passed: false,
             message: count($locations) . ' invalid cast(s) detected.',
             locations: $locations,
+            suggestion: 'Use a built-in cast, an enum, or a class implementing CastsAttributes/CastsInboundAttributes/Castable.',
         );
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function discoverModels(): array
+    {
+        $models = $this->modelClasses ?: get_declared_classes();
+        return $models;
     }
 }

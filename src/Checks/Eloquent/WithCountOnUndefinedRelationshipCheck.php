@@ -20,7 +20,7 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Error;
+        return Severity::Warning;
     }
 
     public function run(): CheckResult
@@ -43,22 +43,25 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                // Collect all model imports in this file
-                $modelImports = $this->findModelImports($content);
+                // Collect all model imports in this file.
+                $modelImports = $this->findModelImports($stripped);
 
-                preg_match_all('/->\s*withCount\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $content, $matches, PREG_SET_ORDER);
+                preg_match_all('/->\s*withCount\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $matches, PREG_SET_ORDER);
 
                 foreach ($matches as $m) {
                     $rel = $m[1];
-                    $modelClass = $this->guessModelClass($content, $modelImports);
+                    $modelClass = $this->guessModelClass($stripped, $modelImports);
 
+                    // Can't reliably determine which model this ->withCount()
+                    // call applies to without runtime type information — skip
+                    // rather than report a false positive.
                     if ($modelClass === null) {
-                        // Can't determine model — skip to avoid false positives
                         continue;
                     }
 
-                    // Check relationship on ALL candidate models, not just the first
                     $existsOnAny = false;
                     foreach ((array) $modelClass as $candidate) {
                         if ($this->relationshipExists($candidate, $rel)) {
@@ -67,17 +70,17 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
                         }
                     }
 
+                    // No "exists on any model" fallback — that previously
+                    // produced false positives (matching a same-named
+                    // relationship on an unrelated model) and false
+                    // negatives (the actual model was not in the scanned
+                    // set). Only flag when we have a candidate model and
+                    // none of the candidates defines the relationship.
                     if (! $existsOnAny) {
-                        // Fallback: check if ANY model in the project has this relationship
-                        // (chain may have resolved through an intermediate relation)
-                        if ($this->relationshipExistsOnAnyModel($rel, $modelImports)) {
-                            continue;
-                        }
-
                         $modelLabel = is_array($modelClass) ? implode('|', $modelClass) : $modelClass;
                         $locations[] = [
                             'file' => $file->getRealPath(),
-                            'issue' => "withCount('{$rel}') called but relationship may not exist on {$modelLabel}",
+                            'issue' => "withCount('{$rel}') called but no candidate model ({$modelLabel}) declares a '{$rel}' relationship",
                         ];
                     }
                 }
@@ -127,7 +130,7 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
      */
     private function guessModelClass(string $content, array $modelImports): string|array|null
     {
-        // Strategy 1: explicit static ::withCount() — find the exact model
+        // Strategy 1: explicit static ::withCount() — find the exact model.
         if (preg_match('/\b(\w+)\s*::\s*withCount\s*\(/', $content, $m)) {
             $shortName = $m[1];
             // Try same-namespace first.
@@ -142,21 +145,19 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
                     return $fqcn;
                 }
             }
+            // Could not resolve — do NOT fall back to all imports.
+            return null;
         }
 
-        // Strategy 2: chained ->withCount() — use all imported models
-        // (can't reliably determine which model from a chain without deep AST)
-        if (! empty($modelImports)) {
-            return $modelImports;
-        }
-
+        // Strategy 2: chained ->withCount() — without a clear target model,
+        // we can't tell which model is involved. Skip.
         return null;
     }
 
     private function relationshipExists(string $modelClass, string $relation): bool
     {
         if (! class_exists($modelClass)) {
-            return true;
+            return false;
         }
         try {
             $ref = new \ReflectionClass($modelClass);
@@ -169,53 +170,5 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
         }
 
         return false;
-    }
-
-    /**
-     * Check if ANY model in app/Models/ has the given relationship method.
-     * This handles chained ->withCount() where the chain resolved to a
-     * different model class than the imported ones.
-     */
-    private function relationshipExistsOnAnyModel(string $relation, array $alreadyChecked): bool
-    {
-        $modelPath = app_path('Models');
-        if (! is_dir($modelPath)) {
-            return false;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($modelPath, \RecursiveDirectoryIterator::SKIP_DOTS)
-        );
-
-        foreach ($files as $file) {
-            if ($file->getExtension() !== 'php') {
-                continue;
-            }
-
-            $fqcn = $this->getClassNameFromFile($file->getRealPath());
-            if ($fqcn === null || in_array($fqcn, $alreadyChecked, true)) {
-                continue;
-            }
-
-            if ($this->relationshipExists($fqcn, $relation)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function getClassNameFromFile(string $path): ?string
-    {
-        $content = file_get_contents($path);
-        if (! preg_match('/^namespace\s+([\w\\\\]+);/m', $content, $ns)) {
-            return null;
-        }
-        if (! preg_match('/^class\s+(\w+)/m', $content, $cls)) {
-            return null;
-        }
-        $fqcn = $ns[1] . '\\' . $cls[1];
-
-        return class_exists($fqcn) && is_subclass_of($fqcn, 'Illuminate\Database\Eloquent\Model') ? $fqcn : null;
     }
 }

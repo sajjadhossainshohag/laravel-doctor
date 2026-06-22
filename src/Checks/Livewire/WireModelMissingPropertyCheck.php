@@ -26,56 +26,38 @@ class WireModelMissingPropertyCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $viewPaths = config('view.paths', [resource_path('views')]);
         $componentPaths = [app_path('Livewire')];
 
-        // Index components and their public properties keyed by short name.
+        $components = $this->indexComponents($componentPaths);
         $propertiesByComponent = [];
-        foreach ($this->indexComponents($componentPaths) as $shortName => $className) {
+        foreach ($components as $shortName => $className) {
             $propertiesByComponent[$shortName] = $this->collectPropertyNames($className);
         }
 
-        foreach ($viewPaths as $path) {
-            if (! is_dir($path)) {
+        foreach ($components as $shortName => $className) {
+            $componentView = $this->resolveComponentView($className, $shortName);
+            if ($componentView === null || ! is_file($componentView)) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
-
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
+            $content = file_get_contents($componentView);
+            // Match wire:model, wire:model.lazy, .defer, .live (any modifier).
+            preg_match_all('/wire:model(?:\.[a-z]+)?\s*=\s*[\'"]?([\w.\-]+)[\'"\s>]/', $content, $m);
+            foreach ($m[1] as $target) {
+                // Nested / form-object bindings (foo.bar or foo-bar-array
+                // syntax for nested data) are valid even when no single
+                // top-level property matches. Skip dotted / hyphenated.
+                if (str_contains($target, '.') || str_contains($target, '-')) {
                     continue;
                 }
 
-                $content = file_get_contents($file->getRealPath());
-
-                // Determine the component via <livewire:foo.bar /> (or @livewire('foo'))
-                $shortName = null;
-                if (preg_match('/<livewire:([\w.-]+)/', $content, $cm)) {
-                    $shortName = explode('.', $cm[1])[0];
-                } elseif (preg_match('/@livewire\s*\(\s*[\'"]([^\'"]+)[\'"]/', $content, $cm2)) {
-                    $shortName = explode('.', $cm2[1])[0];
-                }
-
-                if ($shortName === null || ! isset($propertiesByComponent[$shortName])) {
-                    continue;
-                }
-
-                $componentProps = $propertiesByComponent[$shortName];
-
-                preg_match_all('/wire:model(?:\.lazy|\.defer|\.live)?\s*=\s*[\'"]?([\w.-]+)[\'"\s>]/', $content, $m);
-                foreach ($m[1] as $prop) {
-                    if (str_contains($prop, '.')) {
-                        continue;
-                    }
-                    if (! in_array($prop, $componentProps, true)) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'issue' => "wire:model=\"{$prop}\" — property may not exist on Livewire component '{$shortName}'",
-                        ];
-                    }
+                $componentProps = $propertiesByComponent[$shortName] ?? [];
+                if (! in_array($target, $componentProps, true)) {
+                    $locations[] = [
+                        'file' => $componentView,
+                        'component' => $className,
+                        'issue' => "wire:model=\"{$target}\" — property may not exist on Livewire component '{$shortName}'",
+                    ];
                 }
             }
         }
@@ -99,19 +81,6 @@ class WireModelMissingPropertyCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Add the missing property to the Livewire component class.',
         );
-    }
-
-    private function collectComponentProperties(array $paths): array
-    {
-        // Kept for BC.
-        $props = [];
-        foreach ($this->indexComponents($paths) as $className) {
-            foreach ($this->collectPropertyNames($className) as $prop) {
-                $props[] = $prop;
-            }
-        }
-
-        return $props;
     }
 
     /**
@@ -143,6 +112,35 @@ class WireModelMissingPropertyCheck implements HealthCheck
         }
 
         return $index;
+    }
+
+    private function resolveComponentView(string $className, string $shortName): ?string
+    {
+        try {
+            $reflection = new \ReflectionClass($className);
+            if ($reflection->hasProperty('view')) {
+                $defaults = $reflection->getDefaultProperties();
+                $view = $defaults['view'] ?? null;
+                if (is_string($view) && $view !== '') {
+                    $hints = config('view.paths', [resource_path('views')]);
+                    foreach ($hints as $hint) {
+                        $candidate = $hint.'/'.str_replace('.', '/', $view).'.blade.php';
+                        if (file_exists($candidate)) {
+                            return $candidate;
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable) {
+        }
+
+        $kebab = strtolower(preg_replace('/(?<!^)([A-Z])/', '-$1', $shortName));
+        $conventional = resource_path('views/livewire/'.$kebab.'.blade.php');
+        if (file_exists($conventional)) {
+            return $conventional;
+        }
+
+        return null;
     }
 
     /**

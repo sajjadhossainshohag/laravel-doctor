@@ -51,10 +51,29 @@ class SoftDeleteScopeConflictCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match('/where\s*\(\s*[\'"]deleted_at[\'"]\s*,/', $content)) {
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+                // Only flag a real conflict. The classic mistake is calling
+                // withTrashed() (or onlyTrashed()) AND manually writing
+                // ->where('deleted_at', ...) on a model that uses the
+                // SoftDeletes trait — the manual filter is then redundant
+                // with the global scope / withTrashed behaviour.
+                //
+                // We do NOT flag:
+                //   - query-builder use (no SoftDeletes context)
+                //   - intentional manual filtering (no withTrashed/onlyTrashed)
+                //   - controllers that may legitimately query any way they
+                //     want for reports / admin tasks.
+
+                $usesSoftDeletes = (bool) preg_match('/use\s+SoftDeletes\s*;/', $stripped);
+                $usesWithTrashed = (bool) preg_match('/->\s*(withTrashed|onlyTrashed)\s*\(/', $stripped);
+                $manualDeletedAt = (bool) preg_match('/where\s*\(\s*[\'"]deleted_at[\'"]/', $stripped);
+
+                if ($usesSoftDeletes && $usesWithTrashed && $manualDeletedAt) {
                     $locations[] = [
                         'file' => $file->getRealPath(),
-                        'issue' => 'Manual deleted_at where clause on a model that may use SoftDeletes',
+                        'issue' => 'SoftDeletes model uses withTrashed()/onlyTrashed() together with a manual where(\'deleted_at\', ...) — manual filter is redundant with the global scope',
                         'value' => 'where(\'deleted_at\', ...)',
                     ];
                 }
@@ -67,7 +86,7 @@ class SoftDeleteScopeConflictCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'No manual deleted_at queries detected.',
+                message: 'No soft-delete scope conflicts detected.',
             );
         }
 
@@ -76,9 +95,9 @@ class SoftDeleteScopeConflictCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' manual deleted_at query/condition(s) detected.',
+            message: count($locations).' soft-delete scope conflict(s) detected.',
             locations: $locations,
-            suggestion: 'Use SoftDeletes traits instead of manually querying deleted_at. Check withTrashed()/onlyTrashed() usage.',
+            suggestion: 'Avoid combining withTrashed()/onlyTrashed() with a manual where(\'deleted_at\', ...) clause on SoftDeletes models.',
         );
     }
 }

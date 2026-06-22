@@ -51,27 +51,42 @@ class MissingPolicyClassCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                preg_match('/namespace\s+([^;]+);/', $content, $nsM);
+                preg_match('/^\s*namespace\s+([\w\\\\]+);/m', $stripped, $nsM);
                 $namespace = $nsM[1] ?? '';
 
-                preg_match_all('/Gate::policy\s*\(\s*([\w\\\\]+)::class\s*,\s*([\w\\\\]+)::class\s*\)/', $content, $matches, PREG_SET_ORDER);
+                preg_match_all(
+                    '/Gate::policy\s*\(\s*([\w\\\\]+)::class\s*,\s*([\w\\\\]+)::class\s*\)/',
+                    $stripped,
+                    $matches,
+                    PREG_SET_ORDER
+                );
 
                 foreach ($matches as $m) {
                     $policyClass = $m[2];
 
+                    // Try direct FQCN first.
                     if (class_exists($policyClass)) {
                         continue;
                     }
 
-                    $fqcn = str_starts_with($policyClass, '\\')
-                        ? $policyClass
-                        : $namespace.'\\'.$policyClass;
-
-                    if (class_exists($fqcn)) {
+                    // Try resolving against `use` imports in the file.
+                    $resolved = $this->resolveClassName($stripped, $policyClass);
+                    if ($resolved !== null && class_exists($resolved)) {
                         continue;
                     }
 
+                    // Also try same-namespace resolution.
+                    if ($namespace !== '' && ! str_contains($policyClass, '\\')) {
+                        $candidate = $namespace.'\\'.$policyClass;
+                        if (class_exists($candidate)) {
+                            continue;
+                        }
+                    }
+
+                    // Conventional App\Policies\ fallback.
                     if (! str_contains($policyClass, '\\')) {
                         $prefixed = 'App\\Policies\\'.$policyClass;
                         if (class_exists($prefixed)) {
@@ -106,5 +121,28 @@ class MissingPolicyClassCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Create the missing policy class or remove the Gate::policy() registration.',
         );
+    }
+
+    /**
+     * Resolve a possibly-short class name against `use` imports in the file.
+     */
+    private function resolveClassName(string $content, string $class): ?string
+    {
+        $class = ltrim($class, '\\');
+        if (class_exists($class)) {
+            return $class;
+        }
+
+        if (preg_match_all('/^\s*use\s+([\w\\\\]+)(?:\s+as\s+\w+)?\s*;/m', $content, $uses)) {
+            foreach ($uses[1] as $fqcn) {
+                $parts = explode('\\', ltrim($fqcn, '\\'));
+                $short = end($parts);
+                if ($short === $class) {
+                    return ltrim($fqcn, '\\');
+                }
+            }
+        }
+
+        return null;
     }
 }

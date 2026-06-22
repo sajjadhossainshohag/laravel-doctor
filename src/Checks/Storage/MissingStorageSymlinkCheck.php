@@ -25,6 +25,25 @@ class MissingStorageSymlinkCheck implements HealthCheck
 
     public function run(): CheckResult
     {
+        // The public/storage symlink is only needed when:
+        //  1) the public disk is configured (it's always present by
+        //     default) AND
+        //  2) code actually uses it (Storage::disk('public') or
+        //     Storage::url() to build a public URL).
+        // The old check unconditionally required the symlink, even for
+        // apps that only use private disks (S3, etc.) and never serve
+        // files from public/storage.
+        $publicDisk = config('filesystems.disks.public');
+        if (! is_array($publicDisk) || ($publicDisk['driver'] ?? null) === null) {
+            return new CheckResult(
+                check: $this->name(),
+                category: $this->category(),
+                severity: $this->severity(),
+                passed: true,
+                message: 'No public disk configured — public/storage symlink is not required.',
+            );
+        }
+
         $publicPath = public_path('storage');
         $targetPath = storage_path('app/public');
         $locations = [];
@@ -36,9 +55,6 @@ class MissingStorageSymlinkCheck implements HealthCheck
                 'value' => "Target: {$targetPath}",
             ];
         } elseif (! is_link($publicPath)) {
-            // On Windows, php artisan storage:link creates a junction (reparse point)
-            // rather than a Unix symlink. is_link() returns false for junctions,
-            // but the link still works. Accept is_dir() as valid on Windows.
             if (PHP_OS_FAMILY === 'Windows' && is_dir($publicPath)) {
                 // valid Windows junction
             } else {

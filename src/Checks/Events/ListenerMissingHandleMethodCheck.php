@@ -43,13 +43,32 @@ class ListenerMissingHandleMethodCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (! preg_match('/function\s+handle\s*\(/', $content)) {
-                    preg_match('/class\s+(\w+)/', $content, $m);
-                    $locations[] = [
-                        'file' => $file->getRealPath(),
-                        'issue' => empty($m) ? 'Listener missing handle() method' : "Listener '{$m[1]}' missing handle() method",
-                    ];
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+                if (! preg_match('/class\s+(\w+)/', $stripped, $m)) {
+                    continue;
                 }
+                $className = $m[1];
+
+                // A listener only needs handle() if it doesn't use one of
+                // Laravel's other listener dispatch mechanisms:
+                //   - subscribe() method → it is an event subscriber
+                //     (Laravel routes by the events returned by subscribe())
+                //   - __invoke() method  → invokable listener
+                //   - handle() method   → standard listener
+                $hasHandle = (bool) preg_match('/function\s+handle\s*\(/', $stripped);
+                $hasInvoke = (bool) preg_match('/function\s+__invoke\s*\(/', $stripped);
+                $hasSubscribe = (bool) preg_match('/function\s+subscribe\s*\(/', $stripped);
+
+                if ($hasHandle || $hasInvoke || $hasSubscribe) {
+                    continue;
+                }
+
+                $locations[] = [
+                    'file' => $file->getRealPath(),
+                    'issue' => "Listener '{$className}' has no handle(), __invoke(), or subscribe() method",
+                ];
             }
         }
 
@@ -59,7 +78,7 @@ class ListenerMissingHandleMethodCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'All listener classes have a handle() method.',
+                message: 'All listener classes define a dispatch method.',
             );
         }
 
@@ -68,9 +87,9 @@ class ListenerMissingHandleMethodCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' listener(s) missing handle() method.',
+            message: count($locations).' listener(s) missing a dispatch method.',
             locations: $locations,
-            suggestion: 'Add a handle() method to the listener class.',
+            suggestion: 'Add a handle(), __invoke(), or subscribe() method to the listener class.',
         );
     }
 }

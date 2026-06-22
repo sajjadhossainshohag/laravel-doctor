@@ -40,15 +40,20 @@ class MissingEnvKeysCheck implements HealthCheck
 
     public function run(): CheckResult
     {
-        $configKeys = $this->findEnvCallsInConfig();
+        // Collect config/env() calls as [key, hasDefault] pairs so we know
+        // whether the call is missing-friendly.
+        [$keysWithoutDefault, $keysWithDefault] = $this->findEnvCallsInConfig();
         $envKeys = $this->parseEnvFile($this->envFilePath ?? base_path('.env'));
         $locations = [];
 
-        foreach ($configKeys as $key) {
+        // Only flag env() calls that have NO default — those are the ones
+        // that will silently produce null and break the application when
+        // the key is missing from .env.
+        foreach ($keysWithoutDefault as $key) {
             if (!isset($envKeys[$key])) {
                 $locations[] = [
                     'key' => $key,
-                    'issue' => 'Referenced in config but missing from .env',
+                    'issue' => 'Referenced in config (without a default) but missing from .env',
                 ];
             }
         }
@@ -59,7 +64,7 @@ class MissingEnvKeysCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'All config env() keys are present in .env.',
+                message: 'All required config env() keys are present in .env.',
             );
         }
 
@@ -68,19 +73,28 @@ class MissingEnvKeysCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations) . ' env key(s) referenced in config but missing from .env.',
+            message: count($locations) . ' env key(s) referenced in config (without a default) but missing from .env.',
             locations: $locations,
-            suggestion: 'Add the missing keys to your .env file.',
+            suggestion: 'Add the missing keys to your .env file, or add a default value in the config.',
         );
     }
 
+    /**
+     * Find env() calls in config files and split into two buckets:
+     * those with NO default (env('FOO')) and those WITH a default
+     * (env('FOO', 'bar')). Missing-key issues only matter for the
+     * no-default bucket.
+     *
+     * @return array{0: list<string>, 1: list<string>}
+     */
     private function findEnvCallsInConfig(): array
     {
-        $keys = [];
+        $noDefault = [];
+        $withDefault = [];
         $configPath = $this->configPaths[0] ?? config_path();
 
         if (!is_dir($configPath)) {
-            return [];
+            return [[], []];
         }
 
         $files = new \RecursiveIteratorIterator(
@@ -93,11 +107,73 @@ class MissingEnvKeysCheck implements HealthCheck
             }
 
             $content = file_get_contents($file->getRealPath());
-            preg_match_all('/env\([\'"]([^\'"]+)[\'"]/', $content, $matches);
-            $keys = array_merge($keys, $matches[1]);
+            // Strip line/block comments.
+            $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+            $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+            // env('FOO')           — no default
+            // env('FOO', $default) — has a default
+            // We can't use a flat regex because the second arg may itself
+            // contain commas in arrays — so we use a paren-balancing parse
+            // for each env() call.
+            if (! preg_match_all('/\benv\s*\(/', $stripped, $matches, PREG_OFFSET_CAPTURE)) {
+                continue;
+            }
+
+            foreach ($matches[0] as [$hit, $offset]) {
+                $args = $this->readBalancedParens($stripped, $offset + strlen($hit) - 1);
+                if ($args === null) {
+                    continue;
+                }
+
+                // First arg must be the key as a string literal.
+                if (! preg_match('/^\s*[\'"]([^\'"]+)[\'"]\s*(?:,|$)/', $args, $km)) {
+                    continue;
+                }
+                $key = $km[1];
+
+                // Determine whether a second argument is present.
+                $rest = substr($args, strlen($km[0]));
+                if (trim($rest) === '') {
+                    $noDefault[] = $key;
+                } else {
+                    $withDefault[] = $key;
+                }
+            }
         }
 
-        return array_unique($keys);
+        return [array_values(array_unique($noDefault)), array_values(array_unique($withDefault))];
+    }
+
+    private function readBalancedParens(string $haystack, int $open): ?string
+    {
+        if (! isset($haystack[$open]) || $haystack[$open] !== '(') {
+            return null;
+        }
+        $depth = 0;
+        $i = $open;
+        $inString = false;
+        $stringChar = '';
+        $len = strlen($haystack);
+        while ($i < $len) {
+            $c = $haystack[$i];
+            if ($inString) {
+                if ($c === '\\') { $i += 2; continue; }
+                if ($c === $stringChar) { $inString = false; }
+            } else {
+                if ($c === '\'' || $c === '"') { $inString = true; $stringChar = $c; }
+                elseif ($c === '(') { $depth++; }
+                elseif ($c === ')') {
+                    $depth--;
+                    if ($depth === 0) {
+                        return substr($haystack, $open + 1, $i - $open - 1);
+                    }
+                }
+            }
+            $i++;
+        }
+
+        return null;
     }
 
     private function parseEnvFile(string $path): array

@@ -43,26 +43,35 @@ class TerminateMethodThrowsCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match('/function\s+terminate\s*\([^)]*\)\s*\{(.*?)\n\s*\}/s', $content, $m)) {
-                    $body = $m[1];
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                    // Only flag when terminate() makes external calls (DB/HTTP/Log/Storage)
-                    // WITHOUT wrapping them in try/catch. The response has already been
-                    // sent to the client at this point, so exceptions are silently dropped
-                    // and harder to debug. Simple variable/log calls without throwables are
-                    // fine and shouldn't be flagged.
-                    $hasExternalCall = preg_match(
-                        '/\b(DB::|Http::|Log::|Storage::|Mail::|Redis::|Cache::|event\s*\(|dispatch\s*\()/',
-                        $body
-                    );
-                    $hasTryCatch = preg_match('/\btry\s*\{/', $body);
+                if (! preg_match('/function\s+terminate\s*\([^)]*\)\s*\{(.*?)\n\s*\}/s', $stripped, $m)) {
+                    continue;
+                }
 
-                    if ($hasExternalCall && ! $hasTryCatch) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'issue' => 'terminate() makes external calls (DB/HTTP/Log/etc.) without try/catch — exceptions are silently swallowed after response is sent',
-                        ];
-                    }
+                $body = $m[1];
+                $hasExternalCall = (bool) preg_match(
+                    '/\b(DB::|Http::|Log::|Storage::|Mail::|Redis::|Cache::|event\s*\(|dispatch\s*\()/',
+                    $body
+                );
+                $hasTryCatch = (bool) preg_match('/\btry\s*\{/', $body);
+
+                // The previous version of this check claimed exceptions in
+                // terminate() are silently swallowed by the kernel. That is
+                // incorrect — the kernel calls $instance->terminate() without
+                // a try/catch (Illuminate\Foundation\Http\Kernel::terminateMiddleware).
+                // The response is already sent to the client by the time
+                // terminate() runs, so any exception can disrupt any
+                // post-send cleanup work and may surface in the SAPI log.
+                // We surface this as informational rather than as a failure,
+                // and recommend wrapping external calls in try/catch as a
+                // best practice.
+                if ($hasExternalCall && ! $hasTryCatch) {
+                    $locations[] = [
+                        'file' => $file->getRealPath(),
+                        'issue' => 'terminate() makes external calls (DB/HTTP/Log/etc.) without try/catch — wrap them to keep cleanup work resilient after the response is sent',
+                    ];
                 }
             }
         }
@@ -81,10 +90,10 @@ class TerminateMethodThrowsCheck implements HealthCheck
             check: $this->name(),
             category: $this->category(),
             severity: $this->severity(),
-            passed: false,
-            message: count($locations).' terminate() method(s) may throw silently.',
+            passed: true,
+            message: count($locations).' terminate() method(s) make external calls without try/catch. This is informational — the kernel does not silently swallow terminate exceptions, but cleanup work may still be disrupted.',
             locations: $locations,
-            suggestion: 'Wrap terminate() logic in try/catch to prevent silent failures.',
+            suggestion: 'Wrap terminate() logic in try/catch to keep cleanup work resilient after the response is sent.',
         );
     }
 }

@@ -20,7 +20,7 @@ class AuthorizeAlwaysFalseCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Warning;
+        return Severity::Info;
     }
 
     public function run(): CheckResult
@@ -43,10 +43,18 @@ class AuthorizeAlwaysFalseCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match('/function\s+authorize\s*\([^)]*\)\s*\{\s*return\s+false\s*;\s*\}/', $content)) {
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+                // authorize() { return false; } is documented and is a
+                // legitimate, intentional pattern when the developer
+                // wants to forbid all access in a FormRequest. The
+                // previous version of this check flagged it as a hard
+                // error. We surface it as informational instead.
+                if (preg_match('/function\s+authorize\s*\([^)]*\)\s*\{\s*return\s+false\s*;\s*\}/', $stripped)) {
                     $locations[] = [
                         'file' => $file->getRealPath(),
-                        'issue' => 'authorize() always returns false — every request gets 403',
+                        'issue' => 'authorize() returns false — every request gets 403. Verify this is intentional.',
                     ];
                 }
             }
@@ -58,7 +66,7 @@ class AuthorizeAlwaysFalseCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'No FormRequests with authorize() always returning false.',
+                message: 'No FormRequests with authorize() hardcoded to false detected.',
             );
         }
 
@@ -66,10 +74,10 @@ class AuthorizeAlwaysFalseCheck implements HealthCheck
             check: $this->name(),
             category: $this->category(),
             severity: $this->severity(),
-            passed: false,
-            message: count($locations).' FormRequest(s) with authorize() hardcoded to false.',
+            passed: true,
+            message: count($locations).' FormRequest(s) have authorize() hardcoded to false. This is informational — confirm this is intentional.',
             locations: $locations,
-            suggestion: 'Replace "return false" with actual authorization logic or "return true".',
+            suggestion: 'If this is unintended, replace "return false" with real authorization logic or "return true".',
         );
     }
 }

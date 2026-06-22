@@ -51,12 +51,25 @@ class InterfaceBoundToDeletedConcreteCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match_all('/\$this->app->bind\(\s*([\w\\\\]+)::class\s*,\s*([\w\\\\]+)::class\s*\)/', $content, $m)) {
-                    foreach ($m[2] as $concrete) {
-                        if (! class_exists($concrete)) {
+
+                // Strip line/block comments so we don't flag commented bindings.
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+                // Capture both the abstract (interface) and concrete. Note the
+                // concrete may be a closure, a string, an instance, or
+                // `SomeClass::class` — we only care about the ::class form.
+                if (preg_match_all(
+                    '/\$this->app->bind\s*\(\s*([\w\\\\]+)::class\s*,\s*([\w\\\\]+)::class\s*\)/',
+                    $stripped,
+                    $m
+                )) {
+                    foreach ($m[2] as $i => $concrete) {
+                        $resolved = $this->resolveClassName($stripped, $concrete);
+                        if ($resolved !== null && ! class_exists($resolved)) {
                             $locations[] = [
                                 'file' => $file->getRealPath(),
-                                'issue' => "Binding references non-existent class '{$concrete}'",
+                                'issue' => "Binding references non-existent class '{$resolved}' (was '{$concrete}')",
                             ];
                         }
                     }
@@ -83,5 +96,40 @@ class InterfaceBoundToDeletedConcreteCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Fix the binding to reference an existing class, or remove the binding.',
         );
+    }
+
+    /**
+     * Resolve a class name (which may be a short alias imported via `use`) to
+     * its fully-qualified form. Returns the FQCN, or the original value if
+     * it already looked like a FQCN. Returns null if it cannot be resolved.
+     */
+    private function resolveClassName(string $content, string $class): ?string
+    {
+        $class = ltrim($class, '\\');
+
+        // If it's already a real FQCN, use as-is.
+        if (class_exists($class)) {
+            return $class;
+        }
+
+        // Resolve via `use` imports in the file.
+        if (preg_match_all('/^\s*use\s+([\w\\\\]+)(?:\s+as\s+\w+)?\s*;/m', $content, $uses)) {
+            foreach ($uses[1] as $fqcn) {
+                $parts = explode('\\', ltrim($fqcn, '\\'));
+                $short = end($parts);
+                if ($short === $class) {
+                    return ltrim($fqcn, '\\');
+                }
+            }
+        }
+
+        // Try same-namespace resolution.
+        if (preg_match('/^\s*namespace\s+([\w\\\\]+);/m', $content, $ns)) {
+            $candidate = $ns[1] . '\\' . $class;
+            return $candidate;
+        }
+
+        // Last resort: return the short name; class_exists will be called on it.
+        return $class;
     }
 }

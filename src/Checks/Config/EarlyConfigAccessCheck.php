@@ -18,7 +18,7 @@ class EarlyConfigAccessCheck implements HealthCheck
 
     public function name(): string
     {
-        return 'config() Called in register() Method';
+        return 'env() Called in register() Method';
     }
 
     public function category(): string
@@ -28,7 +28,7 @@ class EarlyConfigAccessCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Info;
+        return Severity::Warning;
     }
 
     public function run(): CheckResult
@@ -53,19 +53,28 @@ class EarlyConfigAccessCheck implements HealthCheck
                 $content = file_get_contents($file->getRealPath());
 
                 // Extract just the register() method body (greedy match across newlines)
-                // so we don't false-positive on config() calls in boot() or other methods.
+                // so we don't false-positive on env() calls in boot() or other methods.
                 if (! preg_match('/function\s+register\s*\([^)]*\)\s*\{(.*?)\n\s*\}/s', $content, $m)) {
                     continue;
                 }
 
                 $registerBody = $m[1];
 
-                // Only flag if config() is actually called in the register() body.
-                // Exclude: $config (variable), ->config (chain), 'config(' (string), //config (comment)
-                if (preg_match('/(?<![$>\/\\\\])\bconfig\s*\(/', $registerBody)) {
+                // The real Laravel early-access problem is `env()` inside
+                // register(). The `config()` repository is fully populated
+                // before service providers' register() runs (LoadConfiguration
+                // happens before RegisterProviders), so `config()` is safe.
+                // `env()` is also fully loaded by then, BUT the documented
+                // best practice is to read env() only inside config files or
+                // outside providers, because other config files that use
+                // `env()` as a default may not have been processed yet.
+                //
+                // Flag only env() calls inside the register() body, not
+                // $env (variable), ->env (chain), 'env(' (string), //env (comment).
+                if (preg_match('/(?<![$>\/\\\\])\benv\s*\(/', $registerBody)) {
                     $locations[] = [
                         'file' => $file->getRealPath(),
-                        'issue' => 'config() called in register() method — config repository may not be fully loaded yet, prefer boot()',
+                        'issue' => 'env() called in register() method — values are loaded but registering providers depending on env at this stage is fragile',
                     ];
                 }
             }
@@ -77,7 +86,7 @@ class EarlyConfigAccessCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'No early config access detected in service providers.',
+                message: 'No env() called inside service provider register() methods.',
             );
         }
 
@@ -86,9 +95,9 @@ class EarlyConfigAccessCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' service provider(s) access config() in register().',
+            message: count($locations).' service provider(s) call env() in register().',
             locations: $locations,
-            suggestion: 'Move config() calls to boot() or use config() only after all providers are loaded.',
+            suggestion: 'Move env() calls to boot() or to a config file so provider order does not affect their values.',
         );
     }
 }

@@ -54,7 +54,6 @@ class ValueVsFirstOnNullCheck implements HealthCheck
                 $locations[] = [
                     'file' => $file->getRealPath(),
                     'issue' => '->first()->property called without null check',
-                    'suggestion' => 'Use ->value(\'column\') or add a null guard before accessing the property.',
                 ];
             }
         }
@@ -99,10 +98,13 @@ class ValueVsFirstOnNullCheck implements HealthCheck
 
     private function callIsGuarded(string $content, int $offset): bool
     {
+        // Look at the 400 chars BEFORE the ->first() call. This is a much
+        // tighter guard than the old logic, which used a coarse "any open
+        // @if" that suppressed unrelated blocks.
         $contextStart = max(0, $offset - 400);
         $context = substr($content, $contextStart, $offset - $contextStart);
 
-        // Inside groupBy/partition closure — each group is guaranteed ≥1 item
+        // Inside groupBy/partition closure — each group is guaranteed ≥1 item.
         if (
             preg_match('/\b(groupBy|partition)\s*\(/', $context)
             && preg_match('/\b(map|each|filter|transform)\s*\(\s*function\s*\(/', $context)
@@ -110,25 +112,21 @@ class ValueVsFirstOnNullCheck implements HealthCheck
             return true;
         }
 
-        // Inside a @if ($var != 0) / @if ($var > 0) Blade guard
-        if (preg_match('/@if\s*\([^)]*(?:!= ?0|!== ?0|> ?0|!\s*=\s*null|->count\s*\(|->isNotEmpty\s*\()/', $context)) {
+        // Blade @if with a count/isNotEmpty/comparison guard that closes
+        // BEFORE the ->first() call (so the @if actually guards it).
+        if (preg_match('/@if\s*\([^)]*(?:->count\s*\(\s*\)\s*[!><]|->isNotEmpty\s*\(\s*\)|[!><]=?\s*0\b|!==\s*null|!=\s*null)\s*\)[^@]*@endif/s', $context)) {
             return true;
         }
 
-        // Inside any @if block (check @if / @endif balance in preceding lines)
-        $before = substr($content, 0, $offset);
-        $openCount = preg_match_all('/@if\s*\(/', $before);
-        $closeCount = preg_match_all('/@endif/', $before);
-        if ($openCount > $closeCount) {
+        // PHP `if (...count/isNotEmpty/!==null) {` opening that hasn't been
+        // closed before the ->first() call.
+        $openIf = preg_match_all('/\bif\s*\(/', $context);
+        $closeBrace = preg_match_all('/\}\s*/', $context);
+        if ($openIf > $closeBrace && preg_match('/if\s*\([^)]*(?:->count\s*\(\s*\)\s*[!><]|->isNotEmpty\s*\(\s*\)|!?==?\s*null)\s*\)/s', $context)) {
             return true;
         }
 
-        // Inside PHP if guard checking count, isNotEmpty, or != 0
-        if (preg_match('/if\s*\([^)]*(?:->count\s*\(\s*\)\s*[!><]|->isNotEmpty\s*\(\s*\)|[!><]=?\s*0\b)/', $context)) {
-            return true;
-        }
-
-        // Calls chained with nullsafe ?-> after first()
+        // Calls chained with nullsafe ?-> after first().
         $afterFirst = substr($content, $offset + strlen('->first()'), 15);
         if (str_contains($afterFirst, '?->')) {
             return true;

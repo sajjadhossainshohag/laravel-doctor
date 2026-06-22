@@ -20,7 +20,7 @@ class UserBeforeAuthCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Warning;
+        return Severity::Info;
     }
 
     public function run(): CheckResult
@@ -43,23 +43,31 @@ class UserBeforeAuthCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                if (! preg_match('/\$request->user\s*\(/', $content)) {
+                if (! preg_match('/\$request->user\s*\(/', $stripped)) {
+                    continue;
+                }
+                if (! preg_match('/function\s+handle\s*\([^)]*\)\s*\{/', $stripped)) {
                     continue;
                 }
 
-                if (! preg_match('/function\s+handle\s*\([^)]*\)\s*\{/', $content)) {
-                    continue;
-                }
-
-                $handleBody = $this->extractHandleBody($content);
+                // $request->user() is documented to return null when the
+                // request is unauthenticated, and Laravel intentionally
+                // supports reading it in middleware that runs both before
+                // and after the auth stage (guest detection, attaching the
+                // user to logs, etc.). Flag only as an informational
+                // reminder that the value may be null, never as a hard
+                // error.
+                $handleBody = $this->extractHandleBody($stripped);
                 if ($this->hasNullGuardAroundUserCall($handleBody)) {
                     continue;
                 }
 
                 $locations[] = [
                     'file' => $file->getRealPath(),
-                    'issue' => '$request->user() called in handle() without null guard — may return null if auth hasn\'t run',
+                    'issue' => '$request->user() called in handle() without null guard — may return null if auth has not run',
                 ];
             }
         }
@@ -78,10 +86,10 @@ class UserBeforeAuthCheck implements HealthCheck
             check: $this->name(),
             category: $this->category(),
             severity: $this->severity(),
-            passed: false,
-            message: count($locations).' middleware(s) call $request->user() without null guard.',
+            passed: true,
+            message: count($locations).' middleware(s) read $request->user() without a null guard. This is informational — reading the user before auth is supported, but the value is nullable.',
             locations: $locations,
-            suggestion: 'Guard with if (!$user) / if ($user === null) or ensure auth middleware runs first.',
+            suggestion: 'If the code dereferences $user, guard with if ($user) / if ($user !== null) or use nullsafe $user?->...',
         );
     }
 
@@ -97,7 +105,7 @@ class UserBeforeAuthCheck implements HealthCheck
     private function hasNullGuardAroundUserCall(string $body): bool
     {
         return (bool) preg_match(
-            '/\$(?:user|\w+)\s*=\s*\$request->user\s*\(.*?;\s*(?:if\s*\(|return\s+|\?->|null\??\s*[{,=])|if\s*\(\s*!\s*\$(?:user|\w+)\s*\)|if\s*\(\s*\$(?:user|\w+)\s*===\s*null\s*\)|if\s*\(\s*null\s*===\s*\$(?:user|\w+)\s*\)|is_null\s*\(\s*\$(?:user|\w+)\s*\)/s',
+            '/\$(?:user|\w+)\s*=\s*\$request->user\s*\(.*?;\s*(?:if\s*\(|return\s+|\?->|null\??\s*[{,=])|if\s*\(\s*!\s*\$(?:user|\w+)\s*\)|if\s*\(\s*\$(?:user|\w+)\s*===\s*null\s*\)|if\s*\(\s*null\s*===\s*\$(?:user|\w+)\s*\)|is_null\s*\(\s*\$(?:user|\w+)\s*\)|->user\s*\(\s*\)\?->/s',
             $body
         );
     }

@@ -36,7 +36,13 @@ class CacheTagsOnUnsupportedDriverCheck implements HealthCheck
         $locations = [];
         $paths = $this->scanPaths ?: config('doctor.scan_paths', [app_path(), resource_path('views')]);
         $driver = config('cache.default', 'file');
-        $supportsTags = in_array($driver, ['redis', 'memcached'], true);
+
+        // Drivers that natively support tags via a TaggableStore subclass.
+        // ArrayStore, ApcStore, MemcachedStore, NullStore, RedisStore, FailoverStore
+        // all extend TaggableStore, so they support ->tags().
+        $supportsTags = in_array($driver, [
+            'array', 'apc', 'memcached', 'redis', 'dynamodb',
+        ], true);
 
         if ($supportsTags) {
             return new CheckResult(
@@ -89,7 +95,7 @@ class CacheTagsOnUnsupportedDriverCheck implements HealthCheck
             passed: false,
             message: count($locations).' Cache::tags() call(s) on driver that does not support tags.',
             locations: $locations,
-            suggestion: 'Switch to Redis or Memcached cache driver, or remove tags() calls.',
+            suggestion: 'Switch to a taggable driver (redis, memcached, array, apc, dynamodb) or remove tags() calls.',
         );
     }
 }

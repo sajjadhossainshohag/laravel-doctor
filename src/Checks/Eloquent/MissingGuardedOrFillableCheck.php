@@ -51,25 +51,47 @@ class MissingGuardedOrFillableCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                // Only consider actual Eloquent models. Skip abstract classes and non-Model classes.
-                if (! preg_match('/class\s+(\w+)\s+extends\s+Model\b/', $content, $classM)) {
+                // Only consider actual Eloquent models. Skip abstract classes
+                // and non-Model classes.
+                if (! preg_match('/class\s+(\w+)\s+extends\s+Model\b/', $stripped, $classM)) {
                     continue;
                 }
 
-                $hasFillable = preg_match('/protected\s+\$\s*fillable\s*=/', $content);
-                $hasGuardedEmpty = preg_match('/protected\s+\$\s*guarded\s*=\s*\[\s*\]/', $content);
-                $hasGuardedWildcard = preg_match('/protected\s+\$\s*guarded\s*=\s*\[\s*[\'"]\*[\'"]\s*\]/', $content);
-                $hasGuardedList = preg_match('/protected\s+\$\s*guarded\s*=\s*\[/', $content);
+                $hasFillable = preg_match('/protected\s+\$\s*fillable\s*=/', $stripped);
+                $hasGuarded = preg_match('/protected\s+\$\s*guarded\s*=/', $stripped);
+                $hasUnguardedAttr = preg_match('/#\s*\[\s*Unguarded\b/', $stripped);
+                $hasGuardedAttr = preg_match('/#\s*\[\s*Guarded\b/', $stripped);
 
-                if ($hasFillable || $hasGuardedEmpty || $hasGuardedWildcard || $hasGuardedList) {
+                // Laravel's default $guarded = ['*'] already blocks all mass
+                // assignment, so a model with no override is SAFE.
+                // We only flag a model that explicitly sets $guarded = []
+                // (or uses the Unguarded attribute) without declaring fillable
+                // — that combination IS risky.
+                $explicitlyEmptyGuarded = preg_match('/protected\s+\$\s*guarded\s*=\s*\[\s*\]/', $stripped);
+
+                if ($hasFillable || $hasGuarded) {
+                    // User has declared one of them — assume they know.
                     continue;
                 }
 
-                $locations[] = [
-                    'file' => $file->getRealPath(),
-                    'issue' => "Model '{$classM[1]}' has no \$fillable or \$guarded property — mass-assignment protection missing",
-                ];
+                if ($explicitlyEmptyGuarded || $hasUnguardedAttr) {
+                    // No $guarded or $fillable set, AND empty-guarded is
+                    // explicitly opted into. Only flag if the user did NOT
+                    // also declare $fillable to lock the model down.
+                    if ($hasFillable) {
+                        continue;
+                    }
+                    $locations[] = [
+                        'file' => $file->getRealPath(),
+                        'issue' => "Model '{$classM[1]}' has empty \$guarded (or #[Unguarded]) but no \$fillable — all attributes are mass-assignable",
+                    ];
+                }
+
+                // Otherwise: no override at all. Laravel's default
+                // $guarded = ['*'] is in effect — that is safe.
             }
         }
 
@@ -79,7 +101,7 @@ class MissingGuardedOrFillableCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'All models have mass-assignment protection.',
+                message: 'All models have appropriate mass-assignment protection.',
             );
         }
 
@@ -88,9 +110,9 @@ class MissingGuardedOrFillableCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' model(s) missing mass-assignment protection.',
+            message: count($locations).' model(s) have unsafe mass-assignment configuration.',
             locations: $locations,
-            suggestion: 'Add `protected $fillable = [...]`, `protected $guarded = [...]`, or `protected $guarded = ["*"]` to each model to prevent mass-assignment vulnerabilities.',
+            suggestion: 'Add `protected $fillable = [...]` to limit which attributes can be mass-assigned.',
         );
     }
 }

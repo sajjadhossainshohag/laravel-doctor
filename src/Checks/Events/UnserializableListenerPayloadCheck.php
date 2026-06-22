@@ -43,10 +43,32 @@ class UnserializableListenerPayloadCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match('/ShouldQueue/', $content) && preg_match('/\bClosure\b|\bfn\s*\(/', $content)) {
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+                if (! preg_match('/ShouldQueue/', $stripped)) {
+                    continue;
+                }
+
+                // Only flag a class with a public property typed as Closure
+                // or assigned a Closure. Local closures inside methods are
+                // not part of the serialized queue payload.
+                $hasUnserializableProperty = false;
+
+                // public Closure $foo;  (typed property)
+                if (preg_match_all('/(public|protected|private)\s+(\?)?\s*Closure\s+\$\w+/', $stripped)) {
+                    $hasUnserializableProperty = true;
+                }
+
+                // public/private/protected $foo = function ... or = fn ...
+                if (preg_match_all('/(public|protected|private)\s+\$\w+\s*=\s*(?:function\s*\(|fn\s*\()/', $stripped)) {
+                    $hasUnserializableProperty = true;
+                }
+
+                if ($hasUnserializableProperty) {
                     $locations[] = [
                         'file' => $file->getRealPath(),
-                        'issue' => 'Queued listener/event contains Closure which cannot be serialized',
+                        'issue' => 'Queued listener/event declares a Closure property — Closures cannot be serialized into a queue payload',
                     ];
                 }
             }
@@ -58,7 +80,7 @@ class UnserializableListenerPayloadCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'No unserializable payloads detected in queued events.',
+                message: 'No unserializable Closure properties in queued event/listener classes.',
             );
         }
 
@@ -67,9 +89,9 @@ class UnserializableListenerPayloadCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' queued event(s) may contain unserializable Closures.',
+            message: count($locations).' queued event(s) may carry unserializable Closure properties.',
             locations: $locations,
-            suggestion: 'Remove Closures from event properties or implement __serialize()/__unserialize().',
+            suggestion: 'Do not store Closures on queued event/listener properties; serialize primitives, scalars, or pass via the constructor as serializable values.',
         );
     }
 }

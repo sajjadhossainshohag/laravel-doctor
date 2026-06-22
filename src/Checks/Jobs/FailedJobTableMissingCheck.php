@@ -26,8 +26,26 @@ class FailedJobTableMissingCheck implements HealthCheck
 
     public function run(): CheckResult
     {
-        $table = 'failed_jobs';
         $locations = [];
+
+        // The failed_jobs table is only required when the configured
+        // queue.failed.driver is the database-style driver. For null, file,
+        // or DynamoDB, Laravel does not need the failed_jobs table.
+        $failedDriver = config('queue.failed.driver', 'null');
+
+        $needsTable = in_array($failedDriver, ['database', 'database-uuids'], true);
+
+        if (! $needsTable) {
+            return new CheckResult(
+                check: $this->name(),
+                category: $this->category(),
+                severity: $this->severity(),
+                passed: true,
+                message: "queue.failed.driver is '{$failedDriver}' — no failed_jobs table is required.",
+            );
+        }
+
+        $table = config('queue.failed.table', 'failed_jobs');
 
         try {
             if (! Schema::hasTable($table)) {
@@ -47,7 +65,7 @@ class FailedJobTableMissingCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'Failed jobs table exists.',
+                message: "Failed jobs table '{$table}' exists.",
             );
         }
 

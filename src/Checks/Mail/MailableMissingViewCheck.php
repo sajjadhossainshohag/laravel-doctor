@@ -51,11 +51,45 @@ class MailableMissingViewCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match('/->view\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $content, $m)) {
-                    $viewName = $m[1];
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+                // 1. ->view('name')
+                $viewNames = [];
+                if (preg_match_all('/->\s*view\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $vm)) {
+                    $viewNames = array_merge($viewNames, $vm[1]);
+                }
+
+                // 2. ->html('name')
+                if (preg_match_all('/->\s*html\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $hm)) {
+                    $viewNames = array_merge($viewNames, $hm[1]);
+                }
+
+                // 3. ->text('name')
+                if (preg_match_all('/->\s*text\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $tm)) {
+                    $viewNames = array_merge($viewNames, $tm[1]);
+                }
+
+                // 4. ->markdown('name')
+                if (preg_match_all('/->\s*markdown\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $mm)) {
+                    $viewNames = array_merge($viewNames, $mm[1]);
+                }
+
+                // 5. Modern Content::view / Content::html / Content::text / Content::markdown
+                // form: new Content(subject: ..., view: 'emails.foo')
+                if (preg_match_all('/new\s+Content\s*\(/', $stripped)) {
+                    foreach (['view', 'html', 'text', 'markdown'] as $k) {
+                        if (preg_match_all('/[\'"]'.preg_quote($k, '/').'[\'"]\s*=>\s*[\'"]([^\'"]+)[\'"]/', $stripped, $cm)) {
+                            $viewNames = array_merge($viewNames, $cm[1]);
+                        }
+                    }
+                }
+
+                foreach (array_unique($viewNames) as $viewName) {
                     if (! view()->exists($viewName)) {
                         $locations[] = [
                             'file' => $file->getRealPath(),
+                            'view' => $viewName,
                             'issue' => "Mailable references view '{$viewName}' which does not exist",
                         ];
                     }
@@ -78,7 +112,7 @@ class MailableMissingViewCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' mailable(s) reference missing view(s).',
+            message: count($locations).' mailable view reference(s) could not be resolved.',
             locations: $locations,
             suggestion: 'Create the missing view or fix the view reference in the mailable.',
         );

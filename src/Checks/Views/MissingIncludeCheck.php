@@ -21,7 +21,7 @@ class MissingIncludeCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Error;
+        return Severity::Warning;
     }
 
     public function run(): CheckResult
@@ -46,7 +46,12 @@ class MissingIncludeCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                preg_match_all('/@include\([\'"]([^\'"]+)[\'"]\)/', $content, $matches);
+                $stripped = $this->stripComments($content);
+
+                // Support multiple @include forms:
+                //   @include('view.name')
+                //   @include('view.name', [...])
+                preg_match_all('/@include\s*\(\s*[\'"]([^\'"]+)[\'"]\s*(?:,|\))/', $stripped, $matches);
 
                 foreach ($matches[1] as $viewName) {
                     $scanned++;
@@ -55,6 +60,18 @@ class MissingIncludeCheck implements HealthCheck
                             'file' => $file->getRealPath(),
                             'view' => $viewName,
                         ];
+                    }
+                }
+                // Array form: @include(['view' => 'name'], [...])
+                if (preg_match_all('/@include\s*\(\s*\[\s*(?:.*?)[\'"]view[\'"]\s*=>\s*[\'"]([^\'"]+)[\'"]/', $stripped, $m2)) {
+                    foreach ($m2[1] as $viewName) {
+                        $scanned++;
+                        if (!View::exists($viewName)) {
+                            $locations[] = [
+                                'file' => $file->getRealPath(),
+                                'view' => $viewName,
+                            ];
+                        }
                     }
                 }
             }
@@ -79,5 +96,14 @@ class MissingIncludeCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Create the missing view file or correct the @include path.',
         );
+    }
+
+    private function stripComments(string $content): string
+    {
+        $content = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
+        $content = preg_replace('#/\*.*?\*/#s', '', $content);
+        $content = preg_replace('!//[^\n]*!', '', $content);
+
+        return $content;
     }
 }

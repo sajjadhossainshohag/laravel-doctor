@@ -22,7 +22,7 @@ class ColumnMismatchCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Error;
+        return Severity::Warning;
     }
 
     public function run(): CheckResult
@@ -59,9 +59,23 @@ class ColumnMismatchCheck implements HealthCheck
                     }
                 }
 
+                // Casts can be valid for non-column attributes (e.g. an
+                // accessor for a derived value like full_name or a JSON
+                // virtual field). Only flag casts whose key matches a
+                // $fillable or $appends entry — that's the case where the
+                // cast is intended to be persisted.
                 $casts = $model->getCasts();
+                $persistedKeys = array_merge($fillable, $model->getAppends());
+                $persistedKeys = array_map('strtolower', $persistedKeys);
+
                 foreach ($casts as $col => $castType) {
-                    if (!in_array(strtolower($col), $columns, true)) {
+                    $colLower = strtolower($col);
+                    if (! in_array($colLower, $columns, true)) {
+                        // Skip if the cast key is a non-persisted virtual
+                        // attribute (no $fillable/$appends reference).
+                        if (! in_array($colLower, $persistedKeys, true)) {
+                            continue;
+                        }
                         $locations[] = [
                             'model' => $modelClass,
                             'table' => $table,
@@ -85,7 +99,7 @@ class ColumnMismatchCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'All model columns and casts match database schema.',
+                message: 'All model columns and persisted casts match the database schema.',
             );
         }
 
@@ -96,9 +110,18 @@ class ColumnMismatchCheck implements HealthCheck
             passed: false,
             message: count($locations) . ' column mismatch(es) detected.',
             locations: $locations,
+            suggestion: 'Add a migration for the missing column, remove the field from $fillable, or adjust the cast.',
         );
     }
 
+    /**
+     * Discover Eloquent models. We can't rely solely on
+     * get_declared_classes() because not all model files are loaded yet.
+     * We also scan the app/Models directory and instantiate each class we
+     * find.
+     *
+     * @return array<int, string>
+     */
     private function discoverModels(): array
     {
         $models = [];
@@ -107,8 +130,41 @@ class ColumnMismatchCheck implements HealthCheck
         foreach ($declared as $class) {
             if (is_subclass_of($class, Model::class)) {
                 $reflection = new \ReflectionClass($class);
-                if (!$reflection->isAbstract()) {
+                if (! $reflection->isAbstract() && ! $reflection->isTrait()) {
                     $models[] = $class;
+                }
+            }
+        }
+
+        // Also scan app/Models and require_once the files so declared
+        // classes are visible. Composer autoloading will then be a no-op.
+        $modelsPath = app_path('Models');
+        if (is_dir($modelsPath)) {
+            $files = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($modelsPath, \RecursiveDirectoryIterator::SKIP_DOTS)
+            );
+
+            foreach ($files as $file) {
+                if ($file->getExtension() !== 'php') {
+                    continue;
+                }
+                $content = file_get_contents($file->getRealPath());
+                if (! preg_match('/^namespace\s+([\w\\\\]+);/m', $content, $ns)
+                    || ! preg_match('/^class\s+(\w+)/m', $content, $cm)) {
+                    continue;
+                }
+                $fqcn = ltrim($ns[1] . '\\' . $cm[1], '\\');
+                if (in_array($fqcn, $models, true)) {
+                    continue;
+                }
+                if (! class_exists($fqcn)) {
+                    require_once $file->getRealPath();
+                }
+                if (class_exists($fqcn) && is_subclass_of($fqcn, Model::class)) {
+                    $reflection = new \ReflectionClass($fqcn);
+                    if (! $reflection->isAbstract() && ! $reflection->isTrait()) {
+                        $models[] = $fqcn;
+                    }
                 }
             }
         }

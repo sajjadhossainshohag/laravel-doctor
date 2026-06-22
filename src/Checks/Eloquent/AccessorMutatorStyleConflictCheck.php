@@ -28,7 +28,7 @@ class AccessorMutatorStyleConflictCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Warning;
+        return Severity::Info;
     }
 
     public function run(): CheckResult
@@ -51,14 +51,40 @@ class AccessorMutatorStyleConflictCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                $hasOldStyle = preg_match('/get\w+Attribute\s*\(/', $content);
-                $hasNewStyle = str_contains($content, 'Attribute::make(');
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                if ($hasOldStyle && $hasNewStyle) {
-                    $locations[] = [
-                        'file' => $file->getRealPath(),
-                        'issue' => 'Model mixes old get{Attr}Attribute style with new Attribute::make() style',
-                    ];
+                // We only treat this as a problem if BOTH styles define an
+                // accessor/mutator for the SAME attribute. Mixing styles
+                // across different attributes is supported by Laravel.
+                $oldNames = [];
+                if (preg_match_all('/function\s+get(\w+)Attribute\s*\(/', $stripped, $m1)) {
+                    $oldNames = array_map(fn ($n) => lcfirst($n), $m1[1]);
+                }
+                $newNames = [];
+                if (preg_match_all('/Attribute::make\s*\([^)]*get\s*:/s', $stripped)) {
+                    // crude — we report the file only if Attribute::make has any getter
+                    $newNames = ['*'];
+                }
+
+                if (! empty($oldNames) && ! empty($newNames)) {
+                    // Refine: check if any old-style accessor name ALSO has an
+                    // Attribute::make getter for the same attribute name.
+                    $conflicts = [];
+                    foreach ($oldNames as $name) {
+                        $studly = str_replace('_', '', ucwords($name, '_'));
+                        if (preg_match('/Attribute::make\s*\(\s*[\'"]?get[\'"]?\s*:/s', $stripped)
+                            && preg_match('/[\'"]?get[\'"]?\s*:\s*function\s*\(\s*\)\s*\{[^}]*\$this->'.preg_quote($name, '/').'\b/s', $stripped)) {
+                            $conflicts[] = $name;
+                        }
+                    }
+
+                    if (! empty($conflicts)) {
+                        $locations[] = [
+                            'file' => $file->getRealPath(),
+                            'issue' => 'Model defines both old-style getXxxAttribute() and new-style Attribute::make() for the same attribute(s): '.implode(', ', $conflicts),
+                        ];
+                    }
                 }
             }
         }
@@ -69,7 +95,7 @@ class AccessorMutatorStyleConflictCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: 'No conflicting accessor/mutator styles detected.',
+                message: 'No accessor/mutator style conflicts on the same attribute detected.',
             );
         }
 
@@ -78,9 +104,9 @@ class AccessorMutatorStyleConflictCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' model(s) mix old and new accessor styles.',
+            message: count($locations).' model(s) define old and new accessor/mutator styles for the same attribute.',
             locations: $locations,
-            suggestion: 'Migrate all accessors to Attribute::make() pattern for consistency.',
+            suggestion: 'Pick one style per attribute. Mixing styles across different attributes is fine.',
         );
     }
 }

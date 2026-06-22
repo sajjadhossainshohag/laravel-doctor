@@ -47,13 +47,14 @@ class StackPushMismatchCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
+                $stripped = $this->stripComments($content);
 
-                preg_match_all('/@stack\([\'"]([^\'"]+)[\'"]\)/', $content, $stackMatches);
+                preg_match_all('/@stack\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $stackMatches);
                 foreach ($stackMatches[1] as $stackName) {
                     $allStacks[$stackName] = true;
                 }
 
-                preg_match_all('/@push\([\'"]([^\'"]+)[\'"]\)/', $content, $pushMatches);
+                preg_match_all('/@push\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $pushMatches);
                 foreach ($pushMatches[1] as $pushName) {
                     $allPushes[$pushName] = ($allPushes[$pushName] ?? 0) + 1;
                 }
@@ -65,7 +66,7 @@ class StackPushMismatchCheck implements HealthCheck
                 $locations[] = [
                     'stack' => $pushName,
                     'pushes' => $count,
-                    'issue' => '@push targets a stack name that has no matching @stack definition',
+                    'issue' => '@push targets a stack name with no matching @stack in any scanned view',
                 ];
             }
         }
@@ -84,10 +85,18 @@ class StackPushMismatchCheck implements HealthCheck
             check: $this->name(),
             category: $this->category(),
             severity: $this->severity(),
-            passed: false,
-            message: count($locations) . ' @push / @stack mismatch(es) detected.',
+            passed: true,
+            message: count($locations) . ' @push target(s) do not have a matching @stack in any scanned view. This is informational — the @stack may live in a layout rendered outside these directories.',
             locations: $locations,
-            suggestion: 'Ensure every @push targets a stack name that is defined with @stack in the parent layout.',
         );
+    }
+
+    private function stripComments(string $content): string
+    {
+        $content = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
+        $content = preg_replace('#/\*.*?\*/#s', '', $content);
+        $content = preg_replace('!//[^\n]*!', '', $content);
+
+        return $content;
     }
 }

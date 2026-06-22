@@ -52,13 +52,20 @@ class UndefinedDiskCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match('/Storage::disk\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $content, $m)) {
-                    $disk = $m[1];
-                    if (! in_array($disk, $disks, true)) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'issue' => "Storage::disk('{$disk}') — '{$disk}' is not defined in config/filesystems.php",
-                        ];
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+                // preg_match_all so EVERY Storage::disk() call per file
+                // is checked. The old check used preg_match which only
+                // inspected the first occurrence.
+                if (preg_match_all('/Storage::disk\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $m)) {
+                    foreach ($m[1] as $disk) {
+                        if (! in_array($disk, $disks, true)) {
+                            $locations[] = [
+                                'file' => $file->getRealPath(),
+                                'issue' => "Storage::disk('{$disk}') — '{$disk}' is not defined in config/filesystems.php",
+                            ];
+                        }
                     }
                 }
             }

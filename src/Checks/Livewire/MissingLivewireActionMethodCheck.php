@@ -26,52 +26,35 @@ class MissingLivewireActionMethodCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $viewPaths = config('view.paths', [resource_path('views')]);
         $componentPaths = [app_path('Livewire')];
 
-        // Build a map: short component name => list of public method names.
+        // For each Livewire component, find its OWN view (not the parent
+        // view that uses <livewire:foo>) and inspect wire:click targets
+        // against the component's methods. Previously, the check mapped
+        // parent Blade views to Livewire components via <livewire:foo>
+        // which is the consumer side, not the component's own template.
         $components = $this->indexComponents($componentPaths);
         $methodNamesByComponent = [];
         foreach ($components as $shortName => $className) {
             $methodNamesByComponent[$shortName] = $this->collectMethodNames($className);
         }
 
-        foreach ($viewPaths as $path) {
-            if (! is_dir($path)) {
+        foreach ($components as $shortName => $className) {
+            $componentView = $this->resolveComponentView($className, $shortName);
+            if ($componentView === null || ! is_file($componentView)) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
-
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
-
-                $content = file_get_contents($file->getRealPath());
-
-                // Determine which component this view belongs to via <livewire:foo.bar />.
-                // If none, skip — we can't tell which component to check against.
-                if (! preg_match('/<livewire:([\w.-]+)/', $content, $cm)) {
-                    continue;
-                }
-
-                $shortName = explode('.', $cm[1])[0];
-                $componentMethods = $methodNamesByComponent[$shortName] ?? null;
-                if ($componentMethods === null) {
-                    continue;
-                }
-
-                preg_match_all('/wire:click\s*=\s*[\'"](\w+)/', $content, $m);
-                foreach ($m[1] as $action) {
-                    if (! in_array($action, $componentMethods, true)) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'issue' => "wire:click=\"{$action}\" — method not found on Livewire component '{$shortName}'",
-                        ];
-                    }
+            $content = file_get_contents($componentView);
+            preg_match_all('/wire:click\s*=\s*[\'"](\w+)/', $content, $m);
+            foreach ($m[1] as $action) {
+                $componentMethods = $methodNamesByComponent[$shortName] ?? [];
+                if (! in_array($action, $componentMethods, true)) {
+                    $locations[] = [
+                        'file' => $componentView,
+                        'component' => $className,
+                        'issue' => "wire:click=\"{$action}\" — method not found on Livewire component '{$shortName}'",
+                    ];
                 }
             }
         }
@@ -97,20 +80,6 @@ class MissingLivewireActionMethodCheck implements HealthCheck
         );
     }
 
-    private function collectComponentMethods(array $paths): array
-    {
-        // Kept for BC: returns the flat list of all method names across all components.
-        $methods = [];
-        $components = $this->indexComponents($paths);
-        foreach ($components as $className) {
-            foreach ($this->collectMethodNames($className) as $method) {
-                $methods[] = $method;
-            }
-        }
-
-        return $methods;
-    }
-
     /**
      * Build map: short name (StudlyCase of filename) => FQCN, by scanning component paths.
      *
@@ -119,10 +88,6 @@ class MissingLivewireActionMethodCheck implements HealthCheck
     private function indexComponents(array $paths): array
     {
         $index = [];
-        $namespaces = [
-            'App\\Livewire',
-            'App\\Http\\Livewire',
-        ];
 
         foreach ($paths as $path) {
             if (! is_dir($path)) {
@@ -138,23 +103,53 @@ class MissingLivewireActionMethodCheck implements HealthCheck
                 }
                 $content = file_get_contents($file->getRealPath());
 
-                // Try to detect FQCN via declared namespace.
-                $class = null;
                 if (preg_match('/^namespace\s+([\w\\\\]+);/m', $content, $ns)
                     && preg_match('/class\s+(\w+)/', $content, $cm)) {
                     $class = ltrim($ns[1] . '\\' . $cm[1], '\\');
+                    $index[class_basename($class)] = $class;
                 }
-
-                if (! $class) {
-                    continue;
-                }
-
-                $short = class_basename($class);
-                $index[$short] = $class;
             }
         }
 
         return $index;
+    }
+
+    /**
+     * Resolve the Blade view file associated with a Livewire component class.
+     * Checks the `view` property first, then falls back to the conventional
+     * livewire/<kebab-name>.blade.php location.
+     */
+    private function resolveComponentView(string $className, string $shortName): ?string
+    {
+        try {
+            $reflection = new \ReflectionClass($className);
+            if ($reflection->hasProperty('view')) {
+                $prop = $reflection->getProperty('view');
+                $prop->setAccessible(true);
+                $defaults = $reflection->getDefaultProperties();
+                $view = $defaults['view'] ?? null;
+                if (is_string($view) && $view !== '') {
+                    $hints = config('view.paths', [resource_path('views')]);
+                    foreach ($hints as $hint) {
+                        $candidate = $hint.'/'.str_replace('.', '/', $view).'.blade.php';
+                        if (file_exists($candidate)) {
+                            return $candidate;
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            // ignore reflection errors
+        }
+
+        // Fallback: conventional location: livewire/<kebab>.blade.php
+        $kebab = strtolower(preg_replace('/(?<!^)([A-Z])/', '-$1', $shortName));
+        $conventional = resource_path('views/livewire/'.$kebab.'.blade.php');
+        if (file_exists($conventional)) {
+            return $conventional;
+        }
+
+        return null;
     }
 
     /**
@@ -175,14 +170,13 @@ class MissingLivewireActionMethodCheck implements HealthCheck
                 if (in_array($method->getName(), ['__construct', 'mount', 'render', 'boot', 'booted', 'initializeTraits'], true)) {
                     continue;
                 }
-                // Only methods declared on the class or its parents (not inherited from Component base).
                 if ($method->getDeclaringClass()->getName() === 'Livewire\Component') {
                     continue;
                 }
                 $methods[] = $method->getName();
             }
         } catch (\Throwable) {
-            // ignore — class probably not autoloaded yet
+            // ignore
         }
 
         return $methods;

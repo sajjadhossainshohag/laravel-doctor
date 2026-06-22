@@ -45,14 +45,30 @@ class MissingComponentCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                preg_match_all('/@component\([\'"]([^\'"]+)[\'"]\)/', $content, $matches);
+                $stripped = $this->stripComments($content);
 
-                foreach ($matches[1] as $componentName) {
-                    if (!View::exists($componentName)) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'component' => $componentName,
-                        ];
+                // Support the @component() function-call form and the
+                // array form. Strip comments before scanning so we don't
+                // flag commented-out references.
+                if (preg_match_all('/@component\s*\(\s*[\'"]([^\'"]+)[\'"]/', $stripped, $m)) {
+                    foreach ($m[1] as $componentName) {
+                        if (!View::exists($componentName)) {
+                            $locations[] = [
+                                'file' => $file->getRealPath(),
+                                'component' => $componentName,
+                            ];
+                        }
+                    }
+                }
+                // Array form: @component(['view' => '...', ...])
+                if (preg_match_all('/@component\s*\(\s*\[\s*(?:.*?)[\'"]view[\'"]\s*=>\s*[\'"]([^\'"]+)[\'"]/', $stripped, $m2)) {
+                    foreach ($m2[1] as $componentName) {
+                        if (!View::exists($componentName)) {
+                            $locations[] = [
+                                'file' => $file->getRealPath(),
+                                'component' => $componentName,
+                            ];
+                        }
                     }
                 }
             }
@@ -75,6 +91,16 @@ class MissingComponentCheck implements HealthCheck
             passed: false,
             message: count($locations) . ' @component reference(s) point to missing views.',
             locations: $locations,
+            suggestion: 'Create the missing view file or correct the @component path.',
         );
+    }
+
+    private function stripComments(string $content): string
+    {
+        $content = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
+        $content = preg_replace('#/\*.*?\*/#s', '', $content);
+        $content = preg_replace('!//[^\n]*!', '', $content);
+
+        return $content;
     }
 }

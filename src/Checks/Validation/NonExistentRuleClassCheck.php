@@ -20,7 +20,7 @@ class NonExistentRuleClassCheck implements HealthCheck
 
     public function severity(): Severity
     {
-        return Severity::Error;
+        return Severity::Warning;
     }
 
     public function run(): CheckResult
@@ -44,13 +44,33 @@ class NonExistentRuleClassCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                preg_match_all('/new\s+(\w+Rule\w*)\s*\(/', $content, $m);
-                foreach ($m[1] as $ruleClass) {
-                    $fqcn = $this->resolveFromUse($content, $ruleClass);
-                    if ($fqcn && ! class_exists($fqcn)) {
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+                // Match `new ClassName(...)` where ClassName is any
+                // valid PHP identifier — NOT just *Rule*. A rule class
+                // doesn't have to be named with the "Rule" suffix; many
+                // teams use descriptive names (UniqueUsername, ValidIban,
+                // etc.).
+                if (preg_match_all('/new\s+([A-Z]\w+)\s*\(/', $stripped, $m)) {
+                    foreach ($m[1] as $ruleClass) {
+                        // Skip Laravel built-in Rule static factory methods.
+                        if (in_array($ruleClass, ['Rule', 'Date', 'File', 'Fluent'], true)) {
+                            continue;
+                        }
+
+                        $resolved = $this->resolveClassName($stripped, $ruleClass);
+
+                        if ($resolved !== null && class_exists($resolved)) {
+                            continue;
+                        }
+                        if (class_exists($ruleClass)) {
+                            continue;
+                        }
+
                         $locations[] = [
                             'file' => $file->getRealPath(),
-                            'issue' => "Custom Rule class '{$fqcn}' does not exist",
+                            'issue' => "Class '{$ruleClass}' referenced in `new ...(...)` does not exist",
                         ];
                     }
                 }
@@ -72,27 +92,33 @@ class NonExistentRuleClassCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' custom rule class(es) not found.',
+            message: count($locations).' rule class(es) not found.',
             locations: $locations,
-            suggestion: 'Create the missing rule class or fix the import statement.',
+            suggestion: 'Create the missing rule class, fix the import statement, or check the namespace.',
         );
     }
 
-    private function resolveFromUse(string $content, string $class): ?string
+    /**
+     * Resolve a possibly-short class name against `use` imports in the file
+     * and the file's namespace. Returns null if no resolution is possible.
+     */
+    private function resolveClassName(string $content, string $class): ?string
     {
+        $class = ltrim($class, '\\');
         if (class_exists($class)) {
             return $class;
         }
-        if (preg_match('/use\s+([\w\\\\]*'.preg_quote($class).')\s*;/', $content, $m)) {
-            return $m[1];
-        }
-        if (preg_match('/namespace\s+([\w\\\\]+);/', $content, $m)) {
-            $fqcn = $m[1].'\\'.$class;
-            if (class_exists($fqcn)) {
-                return $fqcn;
+        if (preg_match_all('/^\s*use\s+([\w\\\\]+)(?:\s+as\s+\w+)?\s*;/m', $content, $uses)) {
+            foreach ($uses[1] as $fqcn) {
+                $parts = explode('\\', ltrim($fqcn, '\\'));
+                if (end($parts) === $class) {
+                    return ltrim($fqcn, '\\');
+                }
             }
         }
-
+        if (preg_match('/^\s*namespace\s+([\w\\\\]+);/m', $content, $ns)) {
+            return $ns[1] . '\\' . $class;
+        }
         return null;
     }
 }

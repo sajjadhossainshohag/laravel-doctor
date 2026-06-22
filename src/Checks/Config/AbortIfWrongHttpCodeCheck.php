@@ -51,14 +51,38 @@ class AbortIfWrongHttpCodeCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                if (preg_match('/abort_if\s*\([^,]+,\s*(\d{3})/', $content, $m) ||
-                    preg_match('/abort_unless\s*\([^,]+,\s*(\d{3})/', $content, $m)) {
-                    $code = (int) $m[1];
-                    if ($code < 400 && $code !== 200) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'issue' => "abort_if/abort_unless with HTTP {$code} — expected 4xx/5xx error code",
-                        ];
+
+                // Strip PHP line comments and Blade {{-- --}} comments so we
+                // don't flag commented-out code.
+                $stripped = preg_replace('!//[^\n]*!', '', $content);
+                $stripped = preg_replace('/\{\{--.*?--\}\}/s', '', $stripped);
+                // Drop string literals so quoted HTTP codes don't get flagged.
+                $stripped = preg_replace("/'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'/", "''", $stripped);
+                $stripped = preg_replace('/"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"/', '""', $stripped);
+
+                // preg_match_all so EVERY occurrence per file is checked
+                // (previously preg_match only inspected the first hit per file).
+                $found = false;
+                if (preg_match_all('/abort_if\s*\(\s*[^,]+,\s*(\d{3})/', $stripped, $m1)) {
+                    foreach ($m1[1] as $code) {
+                        if ($this->isBadHttpCode((int) $code)) {
+                            $locations[] = [
+                                'file' => $file->getRealPath(),
+                                'issue' => "abort_if() with HTTP {$code} — expected 4xx/5xx error code",
+                            ];
+                            $found = true;
+                        }
+                    }
+                }
+                if (preg_match_all('/abort_unless\s*\(\s*[^,]+,\s*(\d{3})/', $stripped, $m2)) {
+                    foreach ($m2[1] as $code) {
+                        if ($this->isBadHttpCode((int) $code)) {
+                            $locations[] = [
+                                'file' => $file->getRealPath(),
+                                'issue' => "abort_unless() with HTTP {$code} — expected 4xx/5xx error code",
+                            ];
+                            $found = true;
+                        }
                     }
                 }
             }
@@ -83,5 +107,12 @@ class AbortIfWrongHttpCodeCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Use appropriate 4xx (client error) or 5xx (server error) codes.',
         );
+    }
+
+    private function isBadHttpCode(int $code): bool
+    {
+        // 1xx (informational) and 2xx/3xx (success/redirection) are not errors.
+        // Only 4xx/5xx are appropriate for abort().
+        return $code < 400;
     }
 }

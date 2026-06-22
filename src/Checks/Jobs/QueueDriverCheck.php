@@ -28,14 +28,18 @@ class QueueDriverCheck implements HealthCheck
         $driver = config('queue.default');
 
         if ($driver === 'sync' && app()->environment('production')) {
+            // sync in production is a configuration choice (often used
+            // for very low-traffic / no-background-worker apps), not a
+            // runtime correctness failure. Surface as informational rather
+            // than failing the health check.
             return new CheckResult(
                 check: $this->name(),
                 category: $this->category(),
                 severity: $this->severity(),
-                passed: false,
-                message: 'Queue driver is set to "sync" in production. Queued jobs will execute synchronously.',
+                passed: true,
+                message: 'Queue driver is set to "sync" in production — queued jobs will execute synchronously.',
                 locations: [['driver' => 'sync']],
-                suggestion: 'Set QUEUE_CONNECTION to database, redis, or another async driver in production.',
+                suggestion: 'If you need asynchronous processing, set QUEUE_CONNECTION to database, redis, or another async driver in production.',
             );
         }
 

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(php -l \"src/Checks/Cache/CacheTagsOnUnsupportedDriverCheck.php\")",
+      "Bash(for f:*)",
+      "Bash(do php:*)",
+      "Bash(done)"
+    ]
+  }
+}

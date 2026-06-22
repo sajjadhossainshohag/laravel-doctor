@@ -54,7 +54,6 @@ class MissingNamedRoutesCheck implements HealthCheck
 
                 $content = file_get_contents($file->getRealPath());
                 $this->checkRouteCalls($routes, $content, $file->getRealPath(), $locations, $scanned);
-                $this->checkUrlCalls($content, $file->getRealPath(), $locations, $scanned);
             }
         }
 
@@ -64,7 +63,7 @@ class MissingNamedRoutesCheck implements HealthCheck
                 category: $this->category(),
                 severity: $this->severity(),
                 passed: true,
-                message: "All {$scanned} route() and url() references look correct.",
+                message: "All {$scanned} route() references look correct.",
             );
         }
 
@@ -73,17 +72,23 @@ class MissingNamedRoutesCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations) . ' route/url reference(s) with issues.',
+            message: count($locations) . ' route reference(s) with issues.',
             locations: $locations,
-            suggestion: 'Define missing named routes, or fix invalid names and URLs.',
+            suggestion: 'Define missing named routes or fix invalid route names.',
         );
     }
 
     private function checkRouteCalls($routes, string $content, string $filePath, array &$locations, int &$scanned): void
     {
+        // Strip Blade {{-- comments --}} and PHP // / # line comments so we
+        // don't flag commented-out route() / url() calls as live code.
+        $stripped = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
+        $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+        $stripped = preg_replace('/^\s*#[^\n]*$/m', '', $stripped);
+
         preg_match_all(
-            '/route\(\s*[\'"]([^\'"]+)[\'"]\s*\)/',
-            $content,
+            '/\broute\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/',
+            $stripped,
             $matches,
             PREG_OFFSET_CAPTURE
         );
@@ -92,7 +97,7 @@ class MissingNamedRoutesCheck implements HealthCheck
             $scanned++;
             $name = $match[0];
             $offset = $match[1];
-            $lineNo = substr_count(substr($content, 0, $offset), "\n") + 1;
+            $lineNo = substr_count(substr($stripped, 0, $offset), "\n") + 1;
 
             $routeExists = $routes->getByName($name) !== null;
 
@@ -114,39 +119,6 @@ class MissingNamedRoutesCheck implements HealthCheck
                     'value' => $name,
                 ];
             }
-        }
-    }
-
-    private function checkUrlCalls(string $content, string $filePath, array &$locations, int &$scanned): void
-    {
-        preg_match_all(
-            '/url\(\s*[\'"]([^\'"]+)[\'"]\s*\)/',
-            $content,
-            $matches,
-            PREG_OFFSET_CAPTURE
-        );
-
-        foreach ($matches[1] as $match) {
-            $scanned++;
-            $path = $match[0];
-            $offset = $match[1];
-            $lineNo = substr_count(substr($content, 0, $offset), "\n") + 1;
-
-            if (preg_match('/[\$\.\+\->]/', $path)) {
-                continue;
-            }
-
-            if (preg_match('/^[a-z_]+(\.[a-z_]+)+$/i', $path) && Route::getRoutes()->getByName($path) !== null) {
-                $locations[] = [
-                    'file' => $filePath,
-                    'line' => $lineNo,
-                    'issue' => 'url() should be route()',
-                    'value' => $path,
-                ];
-                continue;
-            }
-
-
         }
     }
 }

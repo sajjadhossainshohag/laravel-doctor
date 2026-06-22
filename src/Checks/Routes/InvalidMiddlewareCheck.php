@@ -31,9 +31,6 @@ class InvalidMiddlewareCheck implements HealthCheck
         $registeredGroups = [];
         $locations = [];
 
-        // Laravel 11+ configures middleware in bootstrap/app.php using
-        // ->withMiddleware(fn ($mw) => $mw->alias(...)->appendToGroup(...)).
-        // Older Laravel versions use Http\Kernel::$middlewareAliases / $middlewareGroups.
         $bootstrap = base_path('bootstrap/app.php');
         if (file_exists($bootstrap)) {
             $content = file_get_contents($bootstrap);
@@ -49,23 +46,29 @@ class InvalidMiddlewareCheck implements HealthCheck
                     $registeredGroups = array_keys($kernel->getMiddlewareGroups());
                 }
             } catch (\Throwable) {
-                // ignore — empty registry
+                // ignore
             }
         }
 
-        // Also scan service providers for ->aliasMiddleware() calls (old-style)
         $registeredAliases = array_merge($registeredAliases, $this->scanProvidersForMiddlewareAliases());
 
-        // Built-in middleware always available in Laravel
-        $builtin = ['web', 'api', 'auth', 'guest'];
+        // Full Laravel 10/11+ built-in alias list — these are always valid
+        // even when the user has not registered them.
+        $builtinAliases = [
+            'auth', 'auth.basic', 'auth.session', 'cache.headers',
+            'can', 'guest', 'password.confirm', 'precognitive',
+            'signed', 'subscribed', 'throttle', 'verified',
+        ];
+        $builtinGroups = ['web', 'api'];
 
         foreach ($routes as $route) {
             $middleware = $route->middleware();
             foreach ($middleware as $mw) {
                 $name = explode(':', $mw, 2)[0];
 
-                $isValid = in_array($name, $builtin, true)
+                $isValid = in_array($name, $builtinAliases, true)
                     || in_array($name, $registeredAliases, true)
+                    || in_array($name, $builtinGroups, true)
                     || in_array($name, $registeredGroups, true)
                     || class_exists($name);
 
@@ -96,6 +99,7 @@ class InvalidMiddlewareCheck implements HealthCheck
             passed: false,
             message: count($locations) . ' middleware reference(s) may be invalid.',
             locations: $locations,
+            suggestion: 'Register the middleware alias in bootstrap/app.php or check the class exists.',
         );
     }
 
@@ -110,7 +114,6 @@ class InvalidMiddlewareCheck implements HealthCheck
             $aliases = array_merge($aliases, $m[1]);
         }
 
-        // ->alias([ 'key' => Class::class, ... ]) — array form
         if (preg_match_all('/->alias\s*\(\s*\[(.*?)\]\s*\)/s', $content, $m2)) {
             foreach ($m2[1] as $block) {
                 if (preg_match_all('/[\'"]([a-z0-9_.-]+)[\'"]\s*=>/i', $block, $m3)) {
@@ -119,7 +122,6 @@ class InvalidMiddlewareCheck implements HealthCheck
             }
         }
 
-        // ->aliases([ 'key' => Class::class, ... ]) — older plural form
         if (preg_match_all('/->aliases\s*\(\s*\[(.*?)\]\s*\)/s', $content, $m2)) {
             foreach ($m2[1] as $block) {
                 if (preg_match_all('/[\'"]([a-z0-9_.-]+)[\'"]\s*=>/i', $block, $m3)) {
@@ -157,14 +159,14 @@ class InvalidMiddlewareCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                // ->aliasMiddleware('name', Class::class)
-                if (preg_match_all('/->aliasMiddleware\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,/', $content, $m)) {
+                if (preg_match_all('/->aliasMiddleware\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,/', $stripped, $m)) {
                     $aliases = array_merge($aliases, $m[1]);
                 }
 
-                // ->alias('name', Class::class) outside bootstrap/app.php
-                if (preg_match_all('/->alias\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,/', $content, $m2)) {
+                if (preg_match_all('/->alias\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,/', $stripped, $m2)) {
                     $aliases = array_merge($aliases, $m2[1]);
                 }
             }
