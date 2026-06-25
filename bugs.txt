@@ -1,50 +1,31 @@
- High confidence (≥95%) — bug is unambiguous from the source
-#
-Check
-Bug
-Confidence
-1	Storage/S3UrlWithoutConfigCheck	Lines 56–57 strip ALL quoted strings, rewriting Storage::disk('s3') → Storage::disk('') before the detection regex runs. The detection never matches; the IAM-role branch is unreachable.	98%
-2	Schema/ForeignKeyCheck	Line 62 is_array($tableRow) ? reset($tableRow) : $tableRow — Schema::getAllTables() returns objects in L10/11/12. PDO binding of an object throws, swallowed by catch (\Throwable) on line 90 → every table skipped → always reports "All FK references valid."	97%
-3	Components/ComponentViewCheck	Calls $component->render()->name() (lines 54–56) without a try/catch. Laravel allows render() to return Closure or string (inline/anonymous components) — calling ->name() on either throws an uncaught Error that aborts the entire run().	97%
-4	Eloquent/MissingGuardedOrFillableCheck	Line 75 `if ($hasFillable	
-5	Blade/MissingNamedRoutesCheck	Regex route\s*\(\s*['"]...['"]\s*\) requires ) directly after the quote. Misses the overwhelmingly common route('name', $params) form.	96%
-6	Cache/CacheTagsOnUnsupportedDriverCheck	$supportsTags list (lines 43–45) omits null and failover — but the author's own comment (lines 40–42) admits NullStore and FailoverStore extend TaggableStore. Any Cache::tags() on null/failover is a false positive.	96%
-7	Views/MissingExtendsCheck	Line 50 regex ends with \s*\), missing the two-arg form @extends('layout', [...]). Inconsistent with the sibling MissingIncludeCheck which uses the correct (?:,|)) pattern.	95%
-8	Eloquent/WrongRelationshipKeyConventionCheck	(a) Wrong FK arg index for hasMany/hasOne (uses index 2 = local key, should be 1 = FK). (b) Method-body regex function\s+(\w+)\s*\([^)]*\)\s*\{ rejects return types like function items(): HasMany — silently skips every modern relationship method.	95%
-9	Eloquent/WithCountOnUndefinedRelationshipCheck	Structural mismatch: detection regex requires ->withCount(...) (chained form), but guessModelClass() only resolves Model::withCount(...) (static form). They never align — the check almost never fires. Also misses array form and falsely flags dot-notation withCount('posts.comments').	95%
-10	Config/EarlyConfigAccessCheck	Regex function\s+register\s*\([^)]*\)\s*\{ doesn't match register(): void (the L11/12 default stub). Whole file silently skipped.	95%
-11	Container/SingletonAfterFirstResolveCheck	(a) extractMethodBody() regex /function\s+boot\s*\([^)]*\)\s*\{/ rejects boot(): void → every modern provider silently skipped. (b) hasEarlyResolveInSameFile() doesn't verify the same abstract — any app->make('config') in register() triggers a flag for any unrelated singleton() in boot().	95%
-12	Livewire/MissingLivewireComponentCheck	Regex <livewire:([\w-]+)\s requires whitespace after the name — misses <livewire:foo> and <livewire:foo/> (default Livewire syntax).	95%
-13	Jobs/JobTriesZeroCheck	(a) Treats $backoff as a retry cap — it isn't, it's only the delay between attempts. (b) Regex (?:public|protected|private)\s+\$tries misses public int $tries = 0; (typed property, idiomatic in L11/12).	95%
-14	Mail/MailableMissingViewCheck	(a) ->html('<h1>...</h1>') is treated as a view name — but Mailable::html() takes raw HTML → false positive. (b) Modern new Content(view: 'foo') uses named arg :, but regex requires array key => → false negative on every modern Mailable.	95%
+✅ Fixed in this pass (23 bugs)
+For transparency, these previously-flagged bugs are now verified fixed:
+#1 S3UrlWithoutConfig, #2 ForeignKey, #3 ComponentView, #5 MissingNamedRoutes, #6 CacheTagsOnUnsupportedDriver, #7 MissingExtends, #10 EarlyConfigAccess, #11 SingletonAfterFirstResolve, #12 MissingLivewireComponent, #16 InterfaceBoundToDeletedConcrete, #18 ScheduledCommandNotExists, #19 DeletedScheduledCommand, #20 UnserializableListenerPayload (per round 2), #21 ListenerMissingHandleMethod, #22 InvalidCasts, #23 UnregisteredMiddleware, #24 AccessorMutatorStyleConflict, #26 MissingListenerClass, #27 JobDependencyResolution, #28 AbortIfWrongHttpCode, #31 NonExistentRuleClass, #32 ValueVsFirstOnNull, #33 DeprecatedErrorApi.
 
-🟠 Medium confidence (80–94%) — strong evidence, minor interpretation
+🔴 Still broken — High confidence (≥95%)
 #
 Check
-Bug
+Remaining bug
 Confidence
-15	Cache/RememberReturnsClosureCheck	Only strips // and # line comments — /* … */ block comments are never stripped, so commented-out Cache::remember(...) calls get flagged. The // strip is applied to raw content, corrupting URLs containing //.	92%
-16	Container/InterfaceBoundToDeletedConcreteCheck	resolveClassName() can't handle use Foo\Bar as Baz; aliased imports — the use regex only compares the bare short name. Falls back to Namespace\Baz, class_exists is false, false positive.	90%
-17	Schedule/OverlappingJobsWithoutLockCheck	(a) File-level (not task-level) withoutOverlapping() detection. (b) Doesn't scan routes/console.php (Laravel 11+ schedule location). (c) Regex only matches $schedule->, not Schedule:: facade. (d) Wildcard-cron regex flags 0 * * * * (hourly) as "frequent."	90%
-18	Schedule/ScheduledCommandNotExistsCheck	(a) preg_match (not _all) → only first match per file. (b) Misses routes/console.php. (c) Misses Schedule:: facade syntax.	90%
-19	Schedule/DeletedScheduledCommandCheck	Identical trio of issues as #18.	90%
-20	Events/UnserializableListenerPayloadCheck	/ShouldQueue/ matches use imports and strings, not just implements. Closure-property regex misses \Closure (FQCN), readonly, union types, static. Should use reflection.	90%
-21	Events/ListenerMissingHandleMethodCheck	Flat-regex method detection can't see inherited or trait-provided handle()/__invoke()/subscribe(). Extracts class name but never calls method_exists() → false positive on class PremiumUserListener extends BaseUserListener.	88%
-22	Schema/InvalidCastsCheck	discoverModels() falls back to get_declared_classes() only — no app/Models scan. Service provider never calls withModels(). Check is effectively a no-op on most apps. (The author's stated reasons — missing Castable/inbound — are factually wrong; those are handled.)	85%
-23	Middleware/UnregisteredMiddlewareCheck	Detection regex only matches ->middleware('alias'), not the canonical array form ->middleware(['auth', 'custom']).	85%
-24	Eloquent/AccessorMutatorStyleConflictCheck	Conflict regex requires get: function () { ... $this->name ... } keyword form. Modern Laravel uses arrow fn ($value) => and rarely references $this->attr. The existing fixture uses arrow form and is silently passed. Test severity (Warning) also mismatches check (Info).	85%
-25	Mail/MailableVariableMismatchCheck	Modern Content-object Mailables skipped (firstViewName() doesn't parse new Content(view: ...)). @component(...) partials and anonymous <x-foo /> components aren't collected → vars used only there are falsely flagged as unused.	83%
-26	Events/MissingListenerClassCheck	Regex \b(\w+Listener\w*)\b is too broad and resolveClass() can't resolve FQCN strings in $listen arrays (the primary registration pattern). Conservative — no false positives, but major false negatives.	82%
-27	Jobs/JobDependencyResolutionCheck	Only catches Closure; misses PDO, Request, Container, etc. Misleading "All serializable" pass message. getName() throws on union types (swallowed by try/catch).	80%
+1	Eloquent/MissingGuardedOrFillableCheck	Line 68 `if ($hasFillable	
+2	Mail/MailableMissingViewCheck	(a) Lines 63–66 still extract ->html('...') as a view name — but Mailable::html() takes raw HTML → ->html('<h1>Hi</h1>') is a false positive. (b) Lines 78–86 still require the array-key form 'view' => 'foo'; modern new Content(view: 'foo') (named argument) is silently skipped. The code comment on line 79 even shows the author intended to support named args, but the regex doesn't.	96%
+3	Eloquent/WrongRelationshipKeyConventionCheck	Return-type regex (b) is fixed, but (a) is still broken: line 202 $fkIndex = $relType === 'belongsTo' ? 1 : 2; still uses index 2 for hasMany/hasOne. Laravel's signature is hasMany($related, $foreignKey, $localKey) — FK is at index 1, not 2. Using index 2 picks the local key instead of the FK, so the check validates the wrong column.	96%
 
-🟡 Low confidence (60–79%) — plausible, needs runtime confirmation
+🟠 Still broken — Medium confidence (80–94%)
 #
 Check
-Bug
+Remaining bug
 Confidence
-28	Config/AbortIfWrongHttpCodeCheck	abort_if(in_array($x, [1, 2]), 200) is missed because [^,]+ stops at the first comma — but this is an edge case, not the common form.	75%
-29	Livewire/MissingLivewireActionMethodCheck	Multi-component views can still map actions to the wrong component; app/Http/Livewire (Livewire v2 path) hardcoded-allowlist question.	72%
-30	Livewire/WireModelMissingPropertyCheck	Multi-modifier wire:model.lazy.debounce.500ms is missed; same multi-component concern as #29.	70%
-31	Validation/NonExistentRuleClassCheck	FQCNs like new \App\Rules\Foo() are missed (leading \ breaks [A-Z]). $declared = get_declared_classes() is dead code.	68%
-32	Eloquent/ValueVsFirstOnNullCheck	A closed @if...@endif block in the 400 chars before a call still incorrectly counts as a guard. @unless/@endunless and split-statement forms aren't recognized.	65%
-33	Validation/DeprecatedErrorApiCheck	Comments are correctly stripped now (author's self-critique is outdated), but the method-body regex still misses function after(): void (return type).	62%
+4	Eloquent/WithCountOnUndefinedRelationshipCheck	Structural mismatch is fixed and array form is added, but dot-notation false positive remains: withCount('posts.comments') is captured whole by ['"]([^'"]+)['"] and relationshipExists() looks for a method literally named posts.comments — which never exists. Legitimate nested-relation counts get flagged.	90%
+5	Jobs/JobTriesZeroCheck	Typed-property regex (b) is fixed, but (a) is still broken: line 72 still treats $backoff as a retry cap. $backoff is only the delay between retries, not a cap on retry count. So $tries = 0 (infinite) + $backoff = 30 retries forever but passes the check.	88%
+6	Mail/MailableVariableMismatchCheck	@component(...) partials and <x-foo /> anonymous components are now collected (lines 166–175), but firstViewName() (line 130) still uses 'view' => array-key regex; modern new Content(view: 'foo') named-argument syntax does not match. Variables used only in modern-Content Mailables get falsely flagged as unused.	85%
+7	Livewire/MissingLivewireActionMethodCheck	Multi-component mapping is fixed (per-component view resolution + stripEmbeddedChildBlocks), but line 29 still hardcodes $componentPaths = [app_path('Livewire')] with NO app/Http/Livewire (Livewire v2 default) fallback. v2 projects silently pass with no work done.	82%
+8	Livewire/WireModelMissingPropertyCheck	Multi-modifier regex is fixed ((?:\.[\w.]+)* matches .lazy.debounce.500ms), and multi-component is fixed. But same hardcoded app_path('Livewire') (line 29) — Livewire v2 silent failure.	82%
+
+🟡 Still broken — Low confidence (60–79%)
+#
+Check
+Remaining bug
+Confidence
+9	Cache/RememberReturnsClosureCheck	Block comments are now stripped (line 76), but the // strip on line 77 is still string-unaware — URLs containing // inside a closure body (e.g. Cache::remember('k', 60, function () { return Http::get('https://example.com'); })) can still corrupt parsing.	72%
+10	Schedule/OverlappingJobsWithoutLockCheck	routes/console.php, Schedule:: facade, and minute-only cron wildcard check are all fixed, but (a) file-level ->withoutOverlapping() detection at line 67 remains: any task in the file with the call protects ALL frequent tasks in that file, even if they're separate Schedule::command() calls.

@@ -54,35 +54,62 @@ class MailableMissingViewCheck implements HealthCheck
                 $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
                 $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                // 1. ->view('name')
                 $viewNames = [];
+
+                // 1. ->view('name') — legacy and modern fluent API both
+                //    use this to render a Blade view.
                 if (preg_match_all('/->\s*view\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $vm)) {
                     $viewNames = array_merge($viewNames, $vm[1]);
                 }
 
-                // 2. ->html('name')
-                if (preg_match_all('/->\s*html\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $hm)) {
-                    $viewNames = array_merge($viewNames, $hm[1]);
-                }
-
-                // 3. ->text('name')
+                // 2. ->text('name') — legacy fluent form for plain-text view.
                 if (preg_match_all('/->\s*text\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $tm)) {
                     $viewNames = array_merge($viewNames, $tm[1]);
                 }
 
-                // 4. ->markdown('name')
+                // 3. ->markdown('name') — legacy fluent form for markdown view.
                 if (preg_match_all('/->\s*markdown\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $mm)) {
                     $viewNames = array_merge($viewNames, $mm[1]);
                 }
 
-                // 5. Modern Content::view / Content::html / Content::text / Content::markdown
-                // form: new Content(subject: ..., view: 'emails.foo')
+                // NOTE: ->html('...') is intentionally NOT treated as a view
+                // reference. Mailable::html() takes a raw HTML string and
+                // Laravel does NOT resolve it as a Blade view — see
+                // Illuminate/Mail/Mailable::html(). Treating raw HTML as
+                // a view name produced false positives like
+                // ->html('<h1>Hello</h1>') flagging `<h1>Hello</h1>` as a
+                // missing view.
+
+                // 4. Modern Content-object API. Supports BOTH:
+                //    a. Array-key form:  new Content(['view' => 'foo', ...])
+                //       or:               new Content(['html' => 'foo', ...])
+                //    b. Named-argument form: new Content(view: 'foo', ...)
+                //                          new Content(html: 'foo', ...)
+                //    The 'view', 'text', 'markdown' keys reference Blade
+                //    views; the 'html' key takes a raw HTML string and
+                //    must NOT be treated as a view.
                 if (preg_match_all('/new\s+Content\s*\(/', $stripped)) {
-                    foreach (['view', 'html', 'text', 'markdown'] as $k) {
-                        if (preg_match_all('/[\'"]'.preg_quote($k, '/').'[\'"]\s*=>\s*[\'"]([^\'"]+)[\'"]/', $stripped, $cm)) {
+                    foreach (['view', 'text', 'markdown'] as $k) {
+                        // Array-key form: 'k' => 'value'
+                        if (preg_match_all(
+                            '/[\'"]'.preg_quote($k, '/').'[\'"]\s*=>\s*[\'"]([^\'"]+)[\'"]/',
+                            $stripped,
+                            $cm
+                        )) {
                             $viewNames = array_merge($viewNames, $cm[1]);
                         }
+                        // Named-argument form: k: 'value'
+                        if (preg_match_all(
+                            '/\b'.preg_quote($k, '/').'\s*:\s*[\'"]([^\'"]+)[\'"]/',
+                            $stripped,
+                            $cmn
+                        )) {
+                            $viewNames = array_merge($viewNames, $cmn[1]);
+                        }
                     }
+                    // 'html' is documented to accept raw HTML — we do NOT
+                    // collect its value as a view name even when it
+                    // syntactically looks like one (e.g. `html: '<p>Hi</p>'`).
                 }
 
                 foreach (array_unique($viewNames) as $viewName) {

@@ -11,6 +11,14 @@ class WrongRelationshipKeyConventionCheck implements HealthCheck
     /** @var array<string, list<string>> FK usage per model — tracks polymorphic reuse */
     private array $fkUsage = [];
 
+    private array $scanPaths = [];
+
+    public function withPaths(array $paths): static
+    {
+        $this->scanPaths = $paths;
+        return $this;
+    }
+
     public function name(): string
     {
         return 'Wrong Relationship Key Convention';
@@ -29,7 +37,7 @@ class WrongRelationshipKeyConventionCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $paths = [app_path('Models')];
+        $paths = $this->scanPaths ?: [app_path('Models')];
 
         foreach ($paths as $path) {
             if (! is_dir($path)) {
@@ -185,21 +193,38 @@ class WrongRelationshipKeyConventionCheck implements HealthCheck
 
     /**
      * Return [rawArgs, int $fkArgIndex] for the first matching relationship
-     * call. $fkArgIndex is 2 for belongsTo (FK is the 2nd arg) and 3 for
-     * hasMany/hasOne/morphX (FK is the 3rd arg, after the related class and
-     * the local key).
+     * call. $fkArgIndex is 1 (0-based, i.e. the SECOND argument) for ALL
+     * supported relation methods:
+     *
+     *   belongsTo($related, $foreignKey, $ownerKey, $relation)
+     *   hasOne($related, $foreignKey, $localKey)
+     *   hasMany($related, $foreignKey, $localKey)
+     *   morphTo(...$types, $name, $type, $id, $ownerKey)  // skipped elsewhere
+     *   morphMany($related, $name, $type, $id, $localKey)  // skipped elsewhere
+     *   morphOne($related, $name, $type, $id, $localKey)   // skipped elsewhere
+     *
+     * In every case the related model is arg #0 and the foreign key is arg
+     * #1. The previous implementation incorrectly used index 2 for
+     * hasOne/hasMany (which would have picked the LOCAL key — arg #2 —
+     * instead of the foreign key), so any model that explicitly set a FK
+     * like `hasMany(Foo::class, 'parent_id', 'uuid')` was having the
+     * 'uuid' column validated as if it were the foreign key.
      */
     private function extractFirstCallArgs(string $body, string $relType): ?array
     {
         if (! preg_match('/\$this->'.preg_quote($relType, '/').'\s*\(/', $body, $m, PREG_OFFSET_CAPTURE)) {
             return null;
         }
-        $start = $m[0][1] + strlen($m[0][0]);
-        $args = $this->readBalancedParens($body, $start);
+        // $m[0][0] matches '$this->hasMany(' (with the opening paren).
+        // We want readBalancedParens() to start AT the '(', so back up
+        // by 1.
+        $open = $m[0][1] + strlen($m[0][0]) - 1;
+        $args = $this->readBalancedParens($body, $open);
         if ($args === null) {
             return null;
         }
-        $fkIndex = $relType === 'belongsTo' ? 1 : 2; // 0-based: which arg position is the FK
+        // 0-based: FK is at position 1 for ALL supported relation types.
+        $fkIndex = 1;
 
         return [$args, $fkIndex];
     }

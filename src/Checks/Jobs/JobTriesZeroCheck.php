@@ -61,22 +61,46 @@ class JobTriesZeroCheck implements HealthCheck
                 }
 
                 // In Laravel, $tries = 0 means "retry forever" (unlimited
-                // attempts) — a documented and valid pattern, but it
-                // requires either retryUntil() or backoff() to define
-                // when the loop ends. If neither is declared, the job
-                // will loop indefinitely and the user likely intended
-                // a positive number.
+                // attempts). This is intentional ONLY when the user
+                // provides an EXPLICIT CAP somewhere:
+                //
+                //   - retryUntil(): a method that returns a DateTime /
+                //                   timestamp after which retries stop.
+                //   - tries():      a method that returns an int retry
+                //                   cap (overrides the property).
+                //
+                // $backoff is the DELAY between retries — it does NOT
+                // cap retry count. A job with `$tries = 0; $backoff = 30;`
+                // retries forever with 30-second gaps. It must still be
+                // flagged.
                 $hasRetryUntil = (bool) preg_match('/function\s+retryUntil\s*\(/', $stripped);
-                $hasBackoff = (bool) preg_match('/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$backoff\s*=/', $stripped);
+                $hasTriesMethod = (bool) preg_match('/function\s+tries\s*\(\s*\)/', $stripped);
 
-                if ($hasRetryUntil || $hasBackoff) {
+                // $backoff detection is intentionally kept ONLY for
+                // diagnostic purposes — it does NOT short-circuit the
+                // warning. We surface it in the issue message so the
+                // developer understands that the property is present but
+                // unrelated to retry count.
+                $hasBackoffProperty = (bool) preg_match(
+                    '/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$backoff\s*=/',
+                    $stripped
+                );
+                $hasBackoffMethod = (bool) preg_match('/function\s+backoff\s*\(\s*\)/', $stripped);
+                $hasBackoff = $hasBackoffProperty || $hasBackoffMethod;
+
+                if ($hasRetryUntil || $hasTriesMethod) {
                     // $tries = 0 is intentional — no warning.
                     continue;
                 }
 
+                $message = 'Job $tries is set to 0 with no retryUntil()/tries() — job will retry forever, which is rarely intended';
+                if ($hasBackoff) {
+                    $message .= ' (note: $backoff/backoff() is the delay between retries, not a retry cap — it does NOT stop the infinite loop)';
+                }
+
                 $locations[] = [
                     'file' => $file->getRealPath(),
-                    'issue' => 'Job $tries is set to 0 with no retryUntil()/backoff() — job will retry forever, which is rarely intended',
+                    'issue' => $message,
                 ];
             }
         }
@@ -96,9 +120,9 @@ class JobTriesZeroCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' job(s) with $tries = 0 and no retry/backoff cap.',
+            message: count($locations).' job(s) with $tries = 0 and no retry cap.',
             locations: $locations,
-            suggestion: 'Set $tries to a positive integer (e.g. 3), or add a retryUntil()/backoff() to cap the retries.',
+            suggestion: 'Set $tries to a positive integer (e.g. 3), or add retryUntil()/tries() to cap the retries. $backoff is the delay between retries and does NOT cap retries.',
         );
     }
 }

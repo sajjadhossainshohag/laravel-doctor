@@ -8,6 +8,14 @@ use SajjadHossain\Doctor\Enums\Severity;
 
 class WithCountOnUndefinedRelationshipCheck implements HealthCheck
 {
+    private array $scanPaths = [];
+
+    public function withPaths(array $paths): static
+    {
+        $this->scanPaths = $paths;
+        return $this;
+    }
+
     public function name(): string
     {
         return 'withCount() on Undefined Relationships';
@@ -26,7 +34,7 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $paths = [app_path('Models'), app_path('Http/Controllers')];
+        $paths = $this->scanPaths ?: [app_path('Models'), app_path('Http/Controllers')];
 
         foreach ($paths as $path) {
             if (! is_dir($path)) {
@@ -90,17 +98,26 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
                     }
                 }
 
-                // Array form: ->withCount(['posts as p_count', 'comments']).
+                // Array form: ->withCount(['posts as p_count', 'comments'])
+                // or:           ->withCount(['posts.comments'])
                 // We only check the BASE relationship name ('posts',
-                // 'comments') — the alias part is irrelevant to whether
-                // the relationship exists.
+                // 'comments') — the alias part and any nested-relation
+                // tail are irrelevant to whether the relationship exists
+                // on the immediate model.
                 if (preg_match_all('/->\s*withCount\s*\(\s*\[(.*?)\]\s*\)/s', $stripped, $arrMatches)) {
                     foreach ($arrMatches[1] as $block) {
                         if (! preg_match_all('/[\'"]([^\'"]+)[\'"]/', $block, $kv)) {
                             continue;
                         }
                         foreach ($kv[1] as $entry) {
-                            $base = trim(preg_replace('/\s+as\s+\w+$/i', '', $entry));
+                            // Strip 'as <alias>' aliasing.
+                            $withoutAlias = trim(preg_replace('/\s+as\s+\w+$/i', '', $entry));
+                            if ($withoutAlias === '') {
+                                continue;
+                            }
+                            // Use only the first dot-separated segment
+                            // (the relationship on the immediate model).
+                            $base = explode('.', $withoutAlias)[0];
                             if ($base === '') {
                                 continue;
                             }
@@ -163,17 +180,26 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
     {
         $calls = [];
 
-        // Chained single-arg: ->withCount('posts')
+        // Chained single-arg: ->withCount('posts')  OR  ->withCount('posts.comments')
+        //
+        // For dot-notation (nested relations) we only check the FIRST
+        // segment ('posts') — Laravel will resolve 'comments' via
+        // $post->comments() at runtime, so a literal method named
+        // 'posts.comments' would never exist on the parent model.
         if (preg_match_all('/->\s*withCount\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $content, $m)) {
             foreach ($m[1] as $rel) {
-                $calls[] = ['rel' => $rel, 'isStatic' => false, 'isArray' => false];
+                // Use only the first dot-separated segment for the
+                // relationship-existence check.
+                $baseRel = explode('.', $rel)[0];
+                $calls[] = ['rel' => $baseRel, 'isStatic' => false, 'isArray' => false];
             }
         }
 
-        // Static single-arg: Model::withCount('posts')
+        // Static single-arg: Model::withCount('posts')  OR  Model::withCount('posts.comments')
         if (preg_match_all('/\b(\w+)\s*::\s*withCount\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $content, $m2)) {
             foreach ($m2[2] as $rel) {
-                $calls[] = ['rel' => $rel, 'isStatic' => true, 'isArray' => false];
+                $baseRel = explode('.', $rel)[0];
+                $calls[] = ['rel' => $baseRel, 'isStatic' => true, 'isArray' => false];
             }
         }
 

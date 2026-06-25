@@ -60,13 +60,43 @@ class MissingGuardedOrFillableCheck implements HealthCheck
                     continue;
                 }
 
-                $hasFillable = preg_match('/protected\s+\$\s*fillable\s*=/', $stripped);
-                $hasGuarded = preg_match('/protected\s+\$\s*guarded\s*=/', $stripped);
-                $hasUnguardedAttr = preg_match('/#\s*\[\s*Unguarded\b/', $stripped);
-                $hasGuardedAttr = preg_match('/#\s*\[\s*Guarded\b/', $stripped);
+                $className = $classM[1];
 
-                if ($hasFillable || $hasGuarded) {
+                // Detect $fillable / $guarded on the class itself, taking
+                // any visibility modifier (public / protected / private),
+                // any optional type, and any array initializer (including
+                // the empty `[]` literal — explicitly setting
+                // `$guarded = []` is intentional "mass-assign everything"
+                // and counts as a deliberate declaration).
+                $hasFillable = (bool) preg_match(
+                    '/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$fillable\s*=\s*\[/s',
+                    $stripped
+                );
+                $hasGuarded = (bool) preg_match(
+                    '/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$guarded\s*=\s*\[/s',
+                    $stripped
+                );
+                // Also detect the rare single-string form: $guarded = '*';
+                // (Laravel's old default).
+                if (! $hasGuarded) {
+                    $hasGuarded = (bool) preg_match(
+                        '/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$guarded\s*=\s*[\'"][^\'"]+[\'"]\s*;/',
+                        $stripped
+                    );
+                }
+
+                $hasUnguardedAttr = (bool) preg_match('/#\s*\[\s*Unguarded\b/', $stripped);
+                $hasGuardedAttr = (bool) preg_match('/#\s*\[\s*Guarded\b/', $stripped);
+
+                if ($hasFillable || $hasGuarded || $hasGuardedAttr || $hasUnguardedAttr) {
                     // User has declared one of them — assume they know.
+                    continue;
+                }
+
+                // Check inherited configurations: walk up the parent chain
+                // and look for $fillable / $guarded there. PHP reflection
+                // handles traits and deep inheritance correctly.
+                if ($this->hasInheritedFillableOrGuarded($className)) {
                     continue;
                 }
 
@@ -76,7 +106,7 @@ class MissingGuardedOrFillableCheck implements HealthCheck
                 // developer may not have intended that. Flag it.
                 $locations[] = [
                     'file' => $file->getRealPath(),
-                    'issue' => "Model '{$classM[1]}' declares neither \$fillable nor \$guarded — mass-assignment behaviour is implicit and likely unintended",
+                    'issue' => "Model '{$className}' declares neither \$fillable nor \$guarded — mass-assignment behaviour is implicit and likely unintended",
                 ];
             }
         }
@@ -100,5 +130,49 @@ class MissingGuardedOrFillableCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Add `protected $fillable = [...]` to limit which attributes can be mass-assigned.',
         );
+    }
+
+    /**
+     * Determine whether the class (or any parent / trait it uses) declares
+     * a $fillable or $guarded property. Reflection handles inheritance and
+     * traits automatically.
+     */
+    private function hasInheritedFillableOrGuarded(string $className): bool
+    {
+        if (! class_exists($className)) {
+            // We can't resolve via reflection (e.g. fixtures without
+            // autoload) — fall back to scanning the file itself which
+            // is what the regex already does, so this returns false
+            // here only when the regex above didn't find anything.
+            return false;
+        }
+        try {
+            $ref = new \ReflectionClass($className);
+            // Check the class itself and all parents for these props.
+            $candidates = [$ref];
+            while ($parent = $ref->getParentClass()) {
+                $candidates[] = $parent;
+                $ref = $parent;
+            }
+            foreach ($candidates as $cls) {
+                foreach (['fillable', 'guarded'] as $prop) {
+                    if ($cls->hasProperty($prop)) {
+                        $p = $cls->getProperty($prop);
+                        if ($p->isStatic()) {
+                            continue;
+                        }
+                        // Has the property been given a default value?
+                        $defaults = $cls->getDefaultProperties();
+                        if (array_key_exists($prop, $defaults)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            // ignore reflection errors
+        }
+
+        return false;
     }
 }

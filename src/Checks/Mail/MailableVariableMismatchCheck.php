@@ -8,6 +8,14 @@ use SajjadHossain\Doctor\Enums\Severity;
 
 class MailableVariableMismatchCheck implements HealthCheck
 {
+    private array $scanPaths = [];
+
+    public function withPaths(array $paths): static
+    {
+        $this->scanPaths = $paths;
+        return $this;
+    }
+
     public function name(): string
     {
         return 'Mailable Variable / Template Mismatch';
@@ -26,7 +34,7 @@ class MailableVariableMismatchCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $paths = [app_path('Mail')];
+        $paths = $this->scanPaths ?: [app_path('Mail')];
 
         foreach ($paths as $path) {
             if (! is_dir($path)) {
@@ -118,17 +126,30 @@ class MailableVariableMismatchCheck implements HealthCheck
 
     private function firstViewName(string $content): ?string
     {
-        foreach (['view', 'html', 'text', 'markdown'] as $method) {
+        // Legacy fluent API: ->view('foo'), ->markdown('foo'), ->text('foo').
+        // ->html('foo') is intentionally NOT included — Mailable::html()
+        // accepts raw HTML, not a view name. (See Bug 2 fix in
+        // MailableMissingViewCheck for the same reasoning.)
+        foreach (['view', 'markdown', 'text'] as $method) {
             if (preg_match('/->\s*'.preg_quote($method, '/').'\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $content, $m)) {
                 return $m[1];
             }
         }
-        // Modern API: new Content(view: 'foo', ...) or new Content(markdown: 'foo', ...).
-        // Look for `new Content(` and pick the first recognized key.
+        // Modern Content API. Supports BOTH forms:
+        //   Array-key form:  new Content(['view' => 'foo', ...])
+        //   Named-argument form: new Content(view: 'foo', ...)
+        // For 'view', 'markdown', 'text' the value is a Blade view name.
+        // For 'html' the value is RAW HTML — we deliberately skip that
+        // key here, so it never resolves to a (non-existent) view path.
         if (preg_match('/new\s+Content\s*\(/', $content)) {
-            foreach (['view', 'html', 'text', 'markdown'] as $k) {
+            foreach (['view', 'markdown', 'text'] as $k) {
+                // Array-key form: 'k' => 'value'
                 if (preg_match('/[\'"]'.preg_quote($k, '/').'[\'"]\s*=>\s*[\'"]([^\'"]+)[\'"]/', $content, $cm)) {
                     return $cm[1];
+                }
+                // Named-argument form: k: 'value' (PHP 8.0+)
+                if (preg_match('/\b'.preg_quote($k, '/').'\s*:\s*[\'"]([^\'"]+)[\'"]/', $content, $cmn)) {
+                    return $cmn[1];
                 }
             }
         }

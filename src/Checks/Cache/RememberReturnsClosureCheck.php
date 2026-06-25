@@ -69,12 +69,13 @@ class RememberReturnsClosureCheck implements HealthCheck
                 }
 
                 $content = file_get_contents($file->getRealPath());
-                // Strip block AND line comments before matching — otherwise a
-                // commented-out Cache::remember(...) call still triggers the
-                // check. Order matters: block comments first so we don't
-                // accidentally cut a /* ... */ block in half on a // match.
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!(//|#).*!', '', $stripped);
+                // Strip comments in a STRING-AWARE way: we must not strip
+                // `//` (or `#`) inside single/double-quoted strings or
+                // heredoc bodies — otherwise URLs like
+                // `Http::get('https://example.com')` get corrupted to
+                // `Http::get('https:')` and the rest of the parsing
+                // goes haywire.
+                $stripped = $this->stripCommentsStringAware($content);
                 if ($this->rememberCallbackReturnsClosure($stripped)) {
                     $locations[] = [
                         'file' => $file->getRealPath(),
@@ -165,5 +166,180 @@ class RememberReturnsClosureCheck implements HealthCheck
         }
 
         return false;
+    }
+
+    /**
+     * Strip PHP comments in a STRING-AWARE manner.
+     *
+     * The previous naive `!//.*!` regex incorrectly treated the `//` in
+     * URLs (e.g. `Http::get('https://example.com')`) as a line-comment
+     * start, corrupting the rest of the file's parsing.
+     *
+     * This implementation walks the source character-by-character and
+     * tracks string context:
+     *
+     *   - Single-quoted strings  ('…')
+     *   - Double-quoted strings  ("…")
+     *   - Heredoc  (<<<EOT … EOT;)
+     *   - Nowdoc   (<<<'EOT' … EOT;)
+     *
+     * Block (/* … *​/) and line (//, #) comments are removed only when
+     * we are OUTSIDE any string context.
+     */
+    private function stripCommentsStringAware(string $source): string
+    {
+        $out = '';
+        $len = strlen($source);
+        $i = 0;
+        $inSingle = false;
+        $inDouble = false;
+        $inHeredoc = false;
+        $inNowdoc = false;
+        $heredocEnd = '';
+        while ($i < $len) {
+            $c = $source[$i];
+            $next = $source[$i + 1] ?? '';
+            // HEREDOC / NOWDOC detection. <<<ID or <<<'ID'.
+            // We only enter heredoc state at the START of a logical
+            // token (after whitespace / non-alpha) — otherwise we'd
+            // catch the << in a comparison. Heuristic: require the
+            // preceding non-space char to be non-alphanumeric.
+            if (! $inSingle && ! $inDouble && ! $inHeredoc && ! $inNowdoc
+                && $c === '<' && $next === '<' && $source[$i + 2] === '<'
+            ) {
+                // Find end of the heredoc identifier.
+                $j = $i + 3;
+                $isNowdoc = false;
+                if (isset($source[$j]) && $source[$j] === '\'') {
+                    $isNowdoc = true;
+                    $j++;
+                }
+                // Skip whitespace then read identifier.
+                while ($j < $len && ctype_space($source[$j])) {
+                    $j++;
+                }
+                $idStart = $j;
+                while ($j < $len && ctype_alnum($source[$j]) || ($j < $len && $source[$j] === '_')) {
+                    $j++;
+                }
+                $id = substr($source, $idStart, $j - $idStart);
+                if ($id !== '') {
+                    if ($isNowdoc) {
+                        $inNowdoc = true;
+                    } else {
+                        $inHeredoc = true;
+                    }
+                    $heredocEnd = $id;
+                    $out .= substr($source, $i, $j - $i);
+                    $i = $j;
+                    continue;
+                }
+            }
+            if ($inHeredoc) {
+                // Look for the closing identifier on its own line.
+                $lineEnd = strpos($source, "\n", $i);
+                if ($lineEnd === false) {
+                    $lineEnd = $len;
+                }
+                $line = substr($source, $i, $lineEnd - $i);
+                if (trim($line) === $heredocEnd) {
+                    $out .= $line;
+                    $i = $lineEnd;
+                    $inHeredoc = false;
+                    $heredocEnd = '';
+                    continue;
+                }
+                $out .= $line;
+                $i = $lineEnd;
+                continue;
+            }
+            if ($inNowdoc) {
+                // Same as heredoc for our purposes (no interpolation,
+                // so no comment stripping inside either).
+                $lineEnd = strpos($source, "\n", $i);
+                if ($lineEnd === false) {
+                    $lineEnd = $len;
+                }
+                $line = substr($source, $i, $lineEnd - $i);
+                if (trim($line) === $heredocEnd) {
+                    $out .= $line;
+                    $i = $lineEnd;
+                    $inNowdoc = false;
+                    $heredocEnd = '';
+                    continue;
+                }
+                $out .= $line;
+                $i = $lineEnd;
+                continue;
+            }
+            if ($inSingle) {
+                $out .= $c;
+                if ($c === '\\' && $next !== '') {
+                    $out .= $next;
+                    $i += 2;
+                    continue;
+                }
+                if ($c === '\'') {
+                    $inSingle = false;
+                }
+                $i++;
+                continue;
+            }
+            if ($inDouble) {
+                $out .= $c;
+                if ($c === '\\' && $next !== '') {
+                    $out .= $next;
+                    $i += 2;
+                    continue;
+                }
+                if ($c === '"') {
+                    $inDouble = false;
+                }
+                $i++;
+                continue;
+            }
+            // Not in a string — comment detection.
+            if ($c === '/' && $next === '/') {
+                // Skip to end of line.
+                $eol = strpos($source, "\n", $i);
+                if ($eol === false) {
+                    break;
+                }
+                $i = $eol;
+                continue;
+            }
+            if ($c === '#') {
+                $eol = strpos($source, "\n", $i);
+                if ($eol === false) {
+                    break;
+                }
+                $i = $eol;
+                continue;
+            }
+            if ($c === '/' && $next === '*') {
+                $end = strpos($source, '*/', $i + 2);
+                if ($end === false) {
+                    break;
+                }
+                $i = $end + 2;
+                continue;
+            }
+            if ($c === '\'') {
+                $inSingle = true;
+                $out .= $c;
+                $i++;
+                continue;
+            }
+            if ($c === '"') {
+                $inDouble = true;
+                $out .= $c;
+                $i++;
+                continue;
+            }
+            $out .= $c;
+            $i++;
+        }
+
+        return $out;
     }
 }

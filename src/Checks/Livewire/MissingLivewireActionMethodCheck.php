@@ -8,6 +8,14 @@ use SajjadHossain\Doctor\Enums\Severity;
 
 class MissingLivewireActionMethodCheck implements HealthCheck
 {
+    private array $scanPaths = [];
+
+    public function withPaths(array $paths): static
+    {
+        $this->scanPaths = $paths;
+        return $this;
+    }
+
     public function name(): string
     {
         return 'Livewire Action Method Missing';
@@ -26,7 +34,14 @@ class MissingLivewireActionMethodCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $componentPaths = [app_path('Livewire')];
+        // Livewire v3 defaults to app/Livewire, v2 defaults to
+        // app/Http/Livewire. Auto-detect whichever (or both) exist on
+        // disk — projects that have upgraded from v2 to v3 may have
+        // components in either or both directories.
+        $componentPaths = $this->scanPaths ?: [
+            app_path('Livewire'),
+            app_path('Http/Livewire'),
+        ];
 
         // For each Livewire component, find its OWN view (not the parent
         // view that uses <livewire:foo>) and inspect wire:click targets
@@ -145,9 +160,15 @@ class MissingLivewireActionMethodCheck implements HealthCheck
                     continue;
                 }
                 $content = file_get_contents($file->getRealPath());
+                // Strip comments so a docblock like "Standalone class
+                // needed; the..." doesn't fool the class-name regex
+                // below into matching 'needed' instead of the real
+                // class name.
+                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
+                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                if (preg_match('/^namespace\s+([\w\\\\]+);/m', $content, $ns)
-                    && preg_match('/class\s+(\w+)/', $content, $cm)) {
+                if (preg_match('/^namespace\s+([\w\\\\]+);/m', $stripped, $ns)
+                    && preg_match('/class\s+(\w+)/', $stripped, $cm)) {
                     $class = ltrim($ns[1] . '\\' . $cm[1], '\\');
                     $index[class_basename($class)] = $class;
                 }
