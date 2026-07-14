@@ -7,7 +7,7 @@ description: Use Laravel Doctor to scan a Laravel project for code health issues
 
 ## When to use this skill
 
-Use this skill when running `php artisan doctor:scan`, debugging a failing check, or writing new code that must pass Laravel Doctor's static analysis. Always run the scan after generating routes, views, middleware, controllers, jobs, events, mailables, or Eloquent models to catch issues before deployment.
+Use this skill when running `php artisan doctor:scan`, debugging a failing check, or writing new code that should pass Laravel Doctor's static analysis. Always run the scan after generating routes, views, middleware, controllers, jobs, events, mailables, or Eloquent models.
 
 ## Running the scan
 
@@ -20,112 +20,116 @@ Common options:
 ```
 php artisan doctor:scan --only=routes,views              # Run specific categories only
 php artisan doctor:scan --fail-on=error                  # Exit code 1 on errors
-php artisan doctor:scan --json                           # Machine-readable output
 php artisan doctor:scan -v                               # Show all issues (not just first 5 per check)
 ```
 
-Scan runs with no DB and no HTTP — safe for CI/CD.
+### Parsing results programmatically
+
+**Always use `--json` when consuming output programmatically.** The human-readable format uses ✓/✗ glyphs and ANSI color codes — parsing it is unreliable. Example:
+
+```
+php artisan doctor:scan --json
+```
+
+JSON output is a structured array of check results with `check`, `category`, `severity`, `passed`, `message`, `locations[]`, and `suggestion` fields. Reserve the human-readable output only for relaying results directly to the user.
+
+### Requirements at scan time
+
+- **Database**: Required. Several checks query the actual database schema (`Schema::getColumnListing()`, `Schema::hasTable()`). The scan must run in an environment where the database connection is reachable and the schema matches the codebase.
+- **No HTTP requests**: The scan does not make HTTP calls — it runs entirely within the CLI process.
 
 ## Understanding scan output
 
+The human-readable console output shows each check as it runs with pass/fail status and per-check timing:
+
+```
+  [ 1/50] Valid Route Names...              ✓ 42ms
+  [ 2/50] Missing @extends Layouts...       ✗ 312ms
+  ...
+
+  ✓  Missing Controller Method Exists
+     All controller methods resolve to real controller methods.
+  ✗  Column Mismatch (Eloquent vs DB)
+     3 column mismatch(es) detected.
+       app/Models/User.php: — $fillable column not found in DB table: `nickname`
+     → Add a migration for the missing column [...]
+
+  Results: 48 passed, 2 failed (1.62s)
+```
+
 Each line shows:
 - `✓` green — check passed
-- `✗` yellow — warning (potential issue)
-- `✗` red — error (definitive problem)
+- `✗` yellow — warning (potential issue, verify before acting)
+- `✗` red — error (definitive problem, near-certain)
 
-Each failed check lists affected files with line numbers, the specific issue, and a suggested fix. The bottom shows total passed/failed with scan duration.
+Failed checks list affected files with the specific issue and a suggested fix. Always verify before fixing — see the verification section below.
 
-## What each check validates
+## Check reliability tiers
 
-### Routes
-- **Valid Route Names** — named routes don't collide and use dot-separated convention
-- **Controller Method Exists** — route actions point to real controller methods
-- **Missing Controller** — route actions reference existing controller classes
-- **Invalid Middleware** — route middleware aliases are registered in the Kernel
-- **Duplicate URIs** — no two GET routes point to the same URI
+Not all checks are equally trustworthy. Some operate on ground-truth data (class existence, config lookups, DB schema), while others use AST pattern-matching heuristics that can produce false positives. Spend your verification effort accordingly.
 
-### Views
-- **Missing @extends** — `@extends('layout')` references exist in the view finder
-- **Missing @include** — `@include('partial')` references resolve to real views
-- **Missing @component** — `@component('name')` references exist
-- **Stack/Push Mismatch** — every `@push('stack')` has a matching `@stack('stack')`
+### High-reliability checks (near-zero false positives)
 
-### Middleware
-- **Middleware Not Registered** — middleware(): aliases in code are registered in the Kernel
-- **Terminate Method Throws** — `terminate()` method doesn't re-throw exceptions
+These checks query definitive sources of truth — the framework's class loader, config, database schema, kernel contracts, or discrete boolean conditions. **Treat failures as real until proven otherwise.**
 
-### Eloquent
-- **Missing fillable/guarded** — models declare mass-assignment protection
-- **Accessor/Mutator Style** — uses modern `Illuminate\Database\Eloquent\Casts\Attribute` style
-- **Value vs first on null** — doesn't call `->value` or `->first` on a nullable variable
-- **WithCount on undefined relation** — `withCount()` references real relationships
+| Check | Why reliable |
+|---|---|
+| Missing Controller | `class_exists()` — the class is either there or it isn't |
+| Controller Method Exists | `method_exists()` on a known class |
+| Duplicate Route Names | hash-set collision detection on the named route array |
+| Duplicate URIs | hash-set collision on HTTP method + URI |
+| Invalid Middleware | Queries the booted Kernel's `getRouteMiddleware()` + Router's `getMiddleware()` — framework source of truth |
+| Undefined Disk | `config('filesystems.disks')` lookup |
+| App Key | Format validation against known cipher key lengths |
+| Missing Env Keys | Diff between `env()` calls and `.env` keys |
+| Env Example Mismatch | Key diff between `.env` and `.env.example` |
+| Missing Job Class | `class_exists()` |
+| Job Has Handle Method | `method_exists()` |
+| Missing Listener Class | `class_exists()` |
+| Listener Has Handle Method | `method_exists()` |
+| Failed Job Table | `Schema::hasTable()` |
+| Column Mismatch | `Schema::getColumnListing()` against the real database |
+| Invalid Casts | `class_exists()` on cast types |
+| Session Driver Mismatch | `Schema::hasTable('sessions')` |
+| Missing Storage Symlink | `file_exists(public_path('storage'))` |
+| S3 URL Without Config | Config key existence checks |
+| StoreAs Path Traversal | Static string analysis for `..` |
+| Abort If Wrong HTTP Code | Integer range check (400-599) |
+| Bus Chain | `class_exists()` on chained job references |
+| Job Dependency Resolution | Reflection-based constructor analysis |
+| Missing Named Routes | `Route::has()` lookup |
+| Anonymous Component | `view()->exists()` |
+| Component Class | `view()->exists()` |
+| Component Namespace | Directory existence check |
+| Scheduled Command Exists | Artisan command registry lookup |
+| Deleted Scheduled Command | String-to-registry matching |
+| Mailable Missing View | `view()->exists()` |
+| Middleware Not Registered | Kernel `getRouteMiddleware()` + `getMiddlewareGroups()` + Router `getMiddleware()` |
+| Terminate Method Throws | AST analysis of `terminate()` method structure |
+| Missing @extends | `view()->exists()` on raw Blade regex (no ambiguity with @include — resolved) |
+| Missing @include | `view()->exists()` on PHP AST, correctly excludes @extends footer calls |
+| Missing @component | `view()->exists()` on distinct `startComponent`/`renderComponent` AST nodes |
+| Stack/Push Mismatch | Pairs `@push` names against `@stack` names in same template hierarchy |
+| Missing fillable/guarded | Property existence on model classes |
+| WithCount on undefined relation | `method_exists()` on the model class |
+| Authorize Always False | Static `return false` detection in FormRequest `authorize()` |
 
-### Jobs
-- **Job Has Handle Method** — job classes define `handle()`
-- **Missing Job Class** — dispatched job classes exist
-- **Job Tries Zero** — explicitly retryable jobs have `$tries > 0` or `retryUntil()`
-- **Bus Chain** — chained jobs reference existing classes
-- **Failed Job Table** — `failed_jobs` table exists when using database queue
-- **Job Dependency Resolution** — job constructor dependencies are resolvable
+### Lower-reliability checks (require manual confirmation)
 
-### Events
-- **Missing Listener** — event listener classes exist
-- **Listener Handle Method** — listeners define `handle($event)`
+These checks use AST pattern-matching heuristics or behavior inference that can produce false positives depending on coding style, indirection, or dynamic registration. **Always read the reported code and confirm the issue is real before fixing.**
 
-### Mail
-- **Mailable Missing View** — mailables reference existing view files
-- **Mailable Variable Mismatch** — variables passed to `view()` match `{{ $var }}` references
-
-### Database / Schema
-- **Column Mismatch** — model `$fillable`/`$casts` columns exist in the database table
-- **Invalid Casts** — cast types are valid Eloquent cast types
-
-### Storage
-- **Undefined Disk** — `Storage::disk('name')` references a configured disk
-- **S3 URL Without Config** — S3 URL generation has proper config values set
-- **StoreAs Path Traversal** — uploaded file paths don't allow traversal attacks
-- **Missing Storage Symlink** — `public/storage` symlink exists (when configured)
-
-### Config
-- **Abort If Wrong HTTP Code** — `abort_if`/`abort_unless` use valid HTTP status codes
-- **Early Config Access** — no config accessed before bootstrap completes
-
-### Env
-- **App Key** — `APP_KEY` is set and not the default
-- **Env Example Mismatch** — `.env.example` and `.env` have matching keys
-- **Missing Env Keys** — `env('KEY')` calls reference existing env vars
-
-### Cache
-- **Session Driver Mismatch** — session driver matches cache config expectations
-
-### Gates / Policies
-- **Missing Policy** — gate policy classes exist
-
-### Validation
-- **Authorize Always False** — form request `authorize()` doesn't hard-code `false`
-- **Non-Existent Rule Class** — custom validation rule classes exist
-
-### Container
-- **Singleton After First Resolve** — singletons aren't re-registered after first resolution
-- **Interface Bound to Deleted Concrete** — bound implementations exist
-
-### Schedule
-- **Scheduled Command Exists** — `$schedule->command('name')` references a real command
-- **Deleted Command** — scheduled commands aren't pointing to removed Artisan commands
-- **Overlapping Without Lock** — long-running scheduled commands use `withoutOverlapping()`
-
-### Livewire / Blade / Components
-- **Missing Livewire Component** — Livewire component classes exist
-- **Missing Named Routes** — `route('name')` in Blade references real named routes
-- **Anonymous Component** — anonymous Blade component templates exist
-- **Component Class** — class-based Blade components exist
-- **Component Namespace** — component namespace paths resolve
-
-## After generating new code, always run
-
-```php
-php artisan doctor:scan
-```
+| Check | Why unreliable |
+|---|---|
+| Value vs first on null | Pattern-matches `->first()->property` without null guard; can't see null guards in parent scopes, ternary assignments, or `optional()` wrappers |
+| Accessor/Mutator Style | Heuristic detection of mixed old/new accessor patterns; legitimate mixed styles exist (e.g. mutator-only old-style with new-style accessors) |
+| Non-Existent Rule Class | `class_exists()` on rule class references; rules can be registered dynamically via service providers or use short names that resolve through Laravel's rule name mapping |
+| Singleton After First Resolve | Pattern-matches `$this->app->singleton()` inside `boot()`; complex service providers with conditional registration, deferred bindings, or framework-level singletons can trigger false positives |
+| Early Config Access | Finds `env()` calls in provider `register()` methods; legitimate early-bound configs that don't depend on other providers are intentional |
+| Overlapping Without Lock | Detects `$schedule->command()` chains missing `->withoutOverlapping()`; short-lived or idempotent commands often don't need locks |
+| Mailable Variable Mismatch | Compares `view()` arguments against `{{ $var }}` references in templates; dynamic variable names, default values, or `@include`-passed variables create mismatches |
+| Job Tries Zero | Detects `$tries = 0` on jobs; some jobs are intentionally fire-and-forget with external retry mechanisms |
+| Missing Policy Class | `class_exists()` on policy references; policies can be auto-discovered by Laravel without explicit class mapping |
+| Missing Livewire Component | `class_exists()` on component names; Livewire component discovery is namespace-based and may not match exact FQCN |
 
 ## Before fixing any reported issue
 
@@ -133,17 +137,27 @@ php artisan doctor:scan
 
 1. Read the reported file and confirm the issue actually exists
 2. Check whether the referenced class, view, route, middleware alias, disk, env key, or relationship genuinely resolves at runtime
-3. If it is a false positive (e.g. a middleware alias registered dynamically, a view loaded by a package, a model column added by a migration you haven't run), **do not change the code** — the check can be narrowed with `--only` to skip that category
-4. Only fix issues you've confirmed are real
+3. For low-reliability checks especially: look for null guards, dynamic registrations, conditional bindings, or framework auto-discovery that makes the flagged pattern legitimate
+4. If it is a false positive (e.g. a middleware alias registered dynamically, a view loaded by a package, a model column added by a migration you haven't run, a null guard outside the check's scan window), **do not change the code** — use `--only` to skip that category or temporarily ignore the check
+5. Only fix issues you've confirmed are real
 
-Fix any **confirmed** failures before committing. Common fixes:
+## After generating new code, always run
 
-- **Invalid middleware** → register the alias in `bootstrap/app.php` or `app/Http/Kernel.php`
-- **Missing @extends/@include** → create the view file or fix the path
-- **Column Mismatch** → run `php artisan migrate` or update the model's `$fillable`
-- **Missing Env Keys** → add the key to `.env.example`
-- **Undefined Disk** → add the disk to `config/filesystems.php`
-- **Job Tries Zero** → add `public $tries = 3;` to the job class
+```
+php artisan doctor:scan
+```
+
+## Common fixes
+
+Fix only after verifying the issue is real:
+
+- **Invalid middleware** → Register the alias in your middleware configuration. Check which structure your project uses: Laravel 11+ typically uses `bootstrap/app.php` `->withMiddleware()`, Laravel 10 and earlier use `app/Http/Kernel.php` `$routeMiddleware` / `$middlewareAliases`. Inspect your project rather than assuming.
+- **Missing @extends/@include/@component** → Create the view file or fix the path
+- **Column Mismatch** → Run `php artisan migrate` or update the model's `$fillable`
+- **Missing Env Keys** → Add the key to `.env.example`
+- **Undefined Disk** → Add the disk to `config/filesystems.php`
+- **Job Tries Zero** → Add `public $tries = 3;` if the job should retry; if it's intentionally fire-and-forget, ignore
+- **Middleware Not Registered** → Register in Kernel (same version check as Invalid Middleware above)
 
 ## Disabling a check
 
