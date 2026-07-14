@@ -2,11 +2,11 @@
 
 namespace SajjadHossain\Doctor\Checks\Livewire;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class MissingLivewireComponentCheck implements HealthCheck
+class MissingLivewireComponentCheck extends PhpAstCheck
 {
     public function name(): string
     {
@@ -28,33 +28,15 @@ class MissingLivewireComponentCheck implements HealthCheck
         $locations = [];
         $paths = config('view.paths', [resource_path('views')]);
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
-                continue;
-            }
-
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
-
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
-
-                $content = file_get_contents($file->getRealPath());
-                // Match <livewire:foo>, <livewire:foo/>, <livewire:foo ...attrs>, etc.
-// The original regex required whitespace after the name and missed the
-// default idiomatic forms (no attrs, self-closing).
-preg_match_all('/<livewire:([\w-]+)(?=[\s>\/])/', $content, $m);
-                foreach ($m[1] as $component) {
-                    $className = $this->componentToClass($component);
-                    if (! class_exists($className)) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'issue' => "Livewire component '<livewire:{$component} />' class '{$className}' not found",
-                        ];
-                    }
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            preg_match_all('/<livewire:([\w-]+)(?=[\s>\/])/', $file['content'], $m);
+            foreach ($m[1] as $component) {
+                $className = $this->componentToClass($component);
+                if (! class_exists($className)) {
+                    $locations[] = [
+                        'file' => $file['path'],
+                        'issue' => "Livewire component '<livewire:{$component} />' class '{$className}' not found",
+                    ];
                 }
             }
         }

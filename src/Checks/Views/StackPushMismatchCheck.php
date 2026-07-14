@@ -2,11 +2,16 @@
 
 namespace SajjadHossain\Doctor\Checks\Views;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\Variable;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\NodeVisitorAbstract;
+use SajjadHossain\Doctor\BladeAstCheck;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
 
-class StackPushMismatchCheck implements HealthCheck
+class StackPushMismatchCheck extends BladeAstCheck
 {
     public function name(): string
     {
@@ -26,38 +31,51 @@ class StackPushMismatchCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-
-        $paths = config('view.paths', [resource_path('views')]);
-
         $allStacks = [];
         $allPushes = [];
 
-        foreach ($paths as $path) {
-            if (!is_dir($path)) {
+        foreach ($this->scanViewFiles() as $file) {
+            $raw = $this->stripComments($file['content']);
+            $stmts = $this->parseBlade($raw);
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $visitor = new class extends NodeVisitorAbstract {
+                public array $stacks = [];
+                public array $pushes = [];
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
+                public function enterNode(Node $node): void
+                {
+                    if (!$node instanceof MethodCall
+                        || !$node->name instanceof Node\Identifier
+                        || !$node->var instanceof Variable
+                        || $node->var->name !== '__env'
+                    ) {
+                        return;
+                    }
+                    if (count($node->args) < 1 || !$node->args[0]->value instanceof String_) {
+                        return;
+                    }
+
+                    $name = $node->name->toString();
+                    $value = $node->args[0]->value->value;
+
+                    if ($name === 'yieldPushContent') {
+                        $this->stacks[] = $value;
+                    } elseif ($name === 'startPush') {
+                        $this->pushes[] = $value;
+                    }
                 }
+            };
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = $this->stripComments($content);
+            $this->traverse($stmts, $visitor);
 
-                preg_match_all('/@stack\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $stackMatches);
-                foreach ($stackMatches[1] as $stackName) {
-                    $allStacks[$stackName] = true;
-                }
-
-                preg_match_all('/@push\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $pushMatches);
-                foreach ($pushMatches[1] as $pushName) {
-                    $allPushes[$pushName] = ($allPushes[$pushName] ?? 0) + 1;
-                }
+            foreach ($visitor->stacks as $stack) {
+                $allStacks[$stack] = true;
+            }
+            foreach ($visitor->pushes as $push) {
+                $allPushes[$push] = ($allPushes[$push] ?? 0) + 1;
             }
         }
 
@@ -89,14 +107,5 @@ class StackPushMismatchCheck implements HealthCheck
             message: count($locations) . ' @push target(s) do not have a matching @stack in any scanned view. This is informational — the @stack may live in a layout rendered outside these directories.',
             locations: $locations,
         );
-    }
-
-    private function stripComments(string $content): string
-    {
-        $content = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
-        $content = preg_replace('#/\*.*?\*/#s', '', $content);
-        $content = preg_replace('!//[^\n]*!', '', $content);
-
-        return $content;
     }
 }

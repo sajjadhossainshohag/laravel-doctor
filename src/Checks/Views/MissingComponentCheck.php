@@ -2,12 +2,16 @@
 
 namespace SajjadHossain\Doctor\Checks\Views;
 
-use Illuminate\Support\Facades\View;
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\Variable;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\NodeVisitorAbstract;
+use SajjadHossain\Doctor\BladeAstCheck;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
 
-class MissingComponentCheck implements HealthCheck
+class MissingComponentCheck extends BladeAstCheck
 {
     public function name(): string
     {
@@ -28,48 +32,55 @@ class MissingComponentCheck implements HealthCheck
     {
         $locations = [];
 
-        $paths = config('view.paths', [resource_path('views')]);
-
-        foreach ($paths as $path) {
-            if (!is_dir($path)) {
+        foreach ($this->scanViewFiles() as $file) {
+            $raw = $this->stripComments($file['content']);
+            $stmts = $this->parseBlade($raw);
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $lines = $this->mapDirectiveLines($raw, 'component');
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
+            $visitor = new class extends NodeVisitorAbstract {
+                public array $components = [];
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = $this->stripComments($content);
-
-                // Support the @component() function-call form and the
-                // array form. Strip comments before scanning so we don't
-                // flag commented-out references.
-                if (preg_match_all('/@component\s*\(\s*[\'"]([^\'"]+)[\'"]/', $stripped, $m)) {
-                    foreach ($m[1] as $componentName) {
-                        if (!View::exists($componentName)) {
-                            $locations[] = [
-                                'file' => $file->getRealPath(),
-                                'component' => $componentName,
-                            ];
-                        }
+                public function enterNode(Node $node): void
+                {
+                    // $__env->startComponent('name')
+                    if ($node instanceof MethodCall
+                        && $node->name instanceof Node\Identifier
+                        && ($node->name->toString() === 'startComponent' || $node->name->toString() === 'renderComponent')
+                        && $node->var instanceof Variable
+                        && $node->var->name === '__env'
+                        && count($node->args) > 0
+                        && $node->args[0]->value instanceof String_
+                    ) {
+                        $this->components[] = $node->args[0]->value->value;
+                    }
+                    // $__env->make('name', ...) with 'component' intent
+                    if ($node instanceof MethodCall
+                        && $node->name instanceof Node\Identifier
+                        && $node->name->toString() === 'make'
+                        && $node->var instanceof Variable
+                        && $node->var->name === '__env'
+                        && count($node->args) > 0
+                        && $node->args[0]->value instanceof String_
+                    ) {
+                        $this->components[] = $node->args[0]->value->value;
                     }
                 }
-                // Array form: @component(['view' => '...', ...])
-                if (preg_match_all('/@component\s*\(\s*\[\s*(?:.*?)[\'"]view[\'"]\s*=>\s*[\'"]([^\'"]+)[\'"]/', $stripped, $m2)) {
-                    foreach ($m2[1] as $componentName) {
-                        if (!View::exists($componentName)) {
-                            $locations[] = [
-                                'file' => $file->getRealPath(),
-                                'component' => $componentName,
-                            ];
-                        }
-                    }
+            };
+
+            $this->traverse($stmts, $visitor);
+
+            foreach ($visitor->components as $componentName) {
+                if (!view()->exists($componentName)) {
+                    $line = count($lines) > 0 ? array_shift($lines) : null;
+                    $locations[] = [
+                        'file' => $file['path'],
+                        'line' => $line,
+                        'component' => $componentName,
+                    ];
                 }
             }
         }
@@ -93,14 +104,5 @@ class MissingComponentCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Create the missing view file or correct the @component path.',
         );
-    }
-
-    private function stripComments(string $content): string
-    {
-        $content = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
-        $content = preg_replace('#/\*.*?\*/#s', '', $content);
-        $content = preg_replace('!//[^\n]*!', '', $content);
-
-        return $content;
     }
 }

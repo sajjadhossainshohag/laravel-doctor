@@ -6,7 +6,11 @@ abstract class BladeAstCheck extends PhpAstCheck
 {
     protected function compileBlade(string $rawBladeContent): string
     {
-        return app('blade.compiler')->compileString($rawBladeContent);
+        try {
+            return app('blade.compiler')->compileString($rawBladeContent);
+        } catch (\Throwable) {
+            return '<?php // blade compilation failed';
+        }
     }
 
     protected function parseBlade(string $rawContent): ?array

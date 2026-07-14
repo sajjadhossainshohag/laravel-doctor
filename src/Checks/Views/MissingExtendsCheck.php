@@ -2,12 +2,16 @@
 
 namespace SajjadHossain\Doctor\Checks\Views;
 
-use Illuminate\Support\Facades\View;
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\Variable;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\NodeVisitorAbstract;
+use SajjadHossain\Doctor\BladeAstCheck;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
 
-class MissingExtendsCheck implements HealthCheck
+class MissingExtendsCheck extends BladeAstCheck
 {
     public function name(): string
     {
@@ -28,34 +32,43 @@ class MissingExtendsCheck implements HealthCheck
     {
         $locations = [];
 
-        $paths = config('view.paths', [resource_path('views')]);
-
-        foreach ($paths as $path) {
-            if (!is_dir($path)) {
+        foreach ($this->scanViewFiles() as $file) {
+            $raw = $this->stripComments($file['content']);
+            $stmts = $this->parseBlade($raw);
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $lines = $this->mapDirectiveLines($raw, 'extends');
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
+            $visitor = new class extends NodeVisitorAbstract {
+                public array $layouts = [];
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = $this->stripComments($content);
-
-                preg_match_all('/@extends\s*\(\s*[\'"]([^\'"]+)[\'"]\s*(?:,|\))/', $stripped, $matches);
-
-                foreach ($matches[1] as $layoutName) {
-                    if (!View::exists($layoutName)) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'layout' => $layoutName,
-                        ];
+                public function enterNode(Node $node): void
+                {
+                    if ($node instanceof MethodCall
+                        && $node->name instanceof Node\Identifier
+                        && $node->name->toString() === 'make'
+                        && $node->var instanceof Variable
+                        && $node->var->name === '__env'
+                        && count($node->args) > 0
+                        && $node->args[0]->value instanceof String_
+                    ) {
+                        $this->layouts[] = $node->args[0]->value->value;
                     }
+                }
+            };
+
+            $this->traverse($stmts, $visitor);
+
+            foreach ($visitor->layouts as $layoutName) {
+                if (!view()->exists($layoutName)) {
+                    $line = count($lines) > 0 ? array_shift($lines) : null;
+                    $locations[] = [
+                        'file' => $file['path'],
+                        'line' => $line,
+                        'layout' => $layoutName,
+                    ];
                 }
             }
         }
@@ -79,14 +92,5 @@ class MissingExtendsCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Create the missing layout or correct the @extends path.',
         );
-    }
-
-    private function stripComments(string $content): string
-    {
-        $content = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
-        $content = preg_replace('#/\*.*?\*/#s', '', $content);
-        $content = preg_replace('!//[^\n]*!', '', $content);
-
-        return $content;
     }
 }
