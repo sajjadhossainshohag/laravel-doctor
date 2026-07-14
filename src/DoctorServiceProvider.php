@@ -4,28 +4,20 @@ namespace SajjadHossain\Doctor;
 
 use Illuminate\Support\ServiceProvider;
 use SajjadHossain\Doctor\Checks\Blade\MissingNamedRoutesCheck;
-use SajjadHossain\Doctor\Checks\Cache\CacheDriverNotRunningCheck;
-use SajjadHossain\Doctor\Checks\Cache\CacheTagsOnUnsupportedDriverCheck;
-use SajjadHossain\Doctor\Checks\Cache\RememberReturnsClosureCheck;
 use SajjadHossain\Doctor\Checks\Cache\SessionDriverMismatchCheck;
 use SajjadHossain\Doctor\Checks\Components\AnonymousComponentCheck;
 use SajjadHossain\Doctor\Checks\Components\ComponentClassCheck;
 use SajjadHossain\Doctor\Checks\Components\ComponentNamespaceCheck;
-use SajjadHossain\Doctor\Checks\Components\ComponentViewCheck;
 use SajjadHossain\Doctor\Checks\Config\AbortIfWrongHttpCodeCheck;
-use SajjadHossain\Doctor\Checks\Config\ConfigCacheIncompatibleValuesCheck;
 use SajjadHossain\Doctor\Checks\Config\EarlyConfigAccessCheck;
 use SajjadHossain\Doctor\Checks\Container\InterfaceBoundToDeletedConcreteCheck;
 use SajjadHossain\Doctor\Checks\Container\SingletonAfterFirstResolveCheck;
 use SajjadHossain\Doctor\Checks\Eloquent\AccessorMutatorStyleConflictCheck;
 use SajjadHossain\Doctor\Checks\Eloquent\MissingGuardedOrFillableCheck;
-use SajjadHossain\Doctor\Checks\Eloquent\SoftDeleteScopeConflictCheck;
 use SajjadHossain\Doctor\Checks\Eloquent\ValueVsFirstOnNullCheck;
 use SajjadHossain\Doctor\Checks\Eloquent\WithCountOnUndefinedRelationshipCheck;
-use SajjadHossain\Doctor\Checks\Eloquent\WrongRelationshipKeyConventionCheck;
 use SajjadHossain\Doctor\Checks\Events\ListenerMissingHandleMethodCheck;
 use SajjadHossain\Doctor\Checks\Events\MissingListenerClassCheck;
-use SajjadHossain\Doctor\Checks\Events\UnserializableListenerPayloadCheck;
 use SajjadHossain\Doctor\Checks\Gates\MissingPolicyClassCheck;
 use SajjadHossain\Doctor\Checks\Jobs\BusChainCheck;
 use SajjadHossain\Doctor\Checks\Jobs\FailedJobTableMissingCheck;
@@ -33,15 +25,11 @@ use SajjadHossain\Doctor\Checks\Jobs\JobDependencyResolutionCheck;
 use SajjadHossain\Doctor\Checks\Jobs\JobHasHandleMethodCheck;
 use SajjadHossain\Doctor\Checks\Jobs\JobTriesZeroCheck;
 use SajjadHossain\Doctor\Checks\Jobs\MissingJobClassCheck;
-use SajjadHossain\Doctor\Checks\Jobs\QueueDriverCheck;
-use SajjadHossain\Doctor\Checks\Livewire\MissingLivewireActionMethodCheck;
 use SajjadHossain\Doctor\Checks\Livewire\MissingLivewireComponentCheck;
-use SajjadHossain\Doctor\Checks\Livewire\WireModelMissingPropertyCheck;
 use SajjadHossain\Doctor\Checks\Mail\MailableMissingViewCheck;
 use SajjadHossain\Doctor\Checks\Mail\MailableVariableMismatchCheck;
 use SajjadHossain\Doctor\Checks\Middleware\TerminateMethodThrowsCheck;
 use SajjadHossain\Doctor\Checks\Middleware\UnregisteredMiddlewareCheck;
-use SajjadHossain\Doctor\Checks\Middleware\UserBeforeAuthCheck;
 use SajjadHossain\Doctor\Checks\Routes\DuplicateRouteNamesCheck;
 use SajjadHossain\Doctor\Checks\Routes\DuplicateUrisCheck;
 use SajjadHossain\Doctor\Checks\Routes\InvalidMiddlewareCheck;
@@ -51,14 +39,12 @@ use SajjadHossain\Doctor\Checks\Schedule\DeletedScheduledCommandCheck;
 use SajjadHossain\Doctor\Checks\Schedule\OverlappingJobsWithoutLockCheck;
 use SajjadHossain\Doctor\Checks\Schedule\ScheduledCommandNotExistsCheck;
 use SajjadHossain\Doctor\Checks\Schema\ColumnMismatchCheck;
-use SajjadHossain\Doctor\Checks\Schema\ForeignKeyCheck;
 use SajjadHossain\Doctor\Checks\Schema\InvalidCastsCheck;
 use SajjadHossain\Doctor\Checks\Storage\MissingStorageSymlinkCheck;
 use SajjadHossain\Doctor\Checks\Storage\S3UrlWithoutConfigCheck;
 use SajjadHossain\Doctor\Checks\Storage\StoreAsPathTraversalCheck;
 use SajjadHossain\Doctor\Checks\Storage\UndefinedDiskCheck;
 use SajjadHossain\Doctor\Checks\Validation\AuthorizeAlwaysFalseCheck;
-use SajjadHossain\Doctor\Checks\Validation\DeprecatedErrorApiCheck;
 use SajjadHossain\Doctor\Checks\Validation\NonExistentRuleClassCheck;
 use SajjadHossain\Doctor\Checks\Views\MissingComponentCheck;
 use SajjadHossain\Doctor\Checks\Views\MissingExtendsCheck;
@@ -93,8 +79,6 @@ class DoctorServiceProvider extends ServiceProvider
             $registry = $this->app->make(CheckRegistry::class);
             // Eloquent
             $registry->register(WithCountOnUndefinedRelationshipCheck::class);
-            $registry->register(SoftDeleteScopeConflictCheck::class);
-            $registry->register(WrongRelationshipKeyConventionCheck::class);
             $registry->register(ValueVsFirstOnNullCheck::class);
             $registry->register(MissingGuardedOrFillableCheck::class);
             $registry->register(AccessorMutatorStyleConflictCheck::class);
@@ -106,7 +90,6 @@ class DoctorServiceProvider extends ServiceProvider
             // Events
             $registry->register(MissingListenerClassCheck::class);
             $registry->register(ListenerMissingHandleMethodCheck::class);
-            $registry->register(UnserializableListenerPayloadCheck::class);
 
             // Mail
             $registry->register(MailableMissingViewCheck::class);
@@ -115,12 +98,10 @@ class DoctorServiceProvider extends ServiceProvider
             // Middleware
             $registry->register(UnregisteredMiddlewareCheck::class);
             $registry->register(TerminateMethodThrowsCheck::class);
-            $registry->register(UserBeforeAuthCheck::class);
 
             // Validation
             $registry->register(AuthorizeAlwaysFalseCheck::class);
             $registry->register(NonExistentRuleClassCheck::class);
-            $registry->register(DeprecatedErrorApiCheck::class);
 
             // Storage
             $registry->register(S3UrlWithoutConfigCheck::class);
@@ -129,10 +110,7 @@ class DoctorServiceProvider extends ServiceProvider
             $registry->register(MissingStorageSymlinkCheck::class);
 
             // Cache
-            $registry->register(CacheDriverNotRunningCheck::class);
             $registry->register(SessionDriverMismatchCheck::class);
-            $registry->register(CacheTagsOnUnsupportedDriverCheck::class);
-            $registry->register(RememberReturnsClosureCheck::class);
 
             // Schedule
             $registry->register(ScheduledCommandNotExistsCheck::class);
@@ -144,8 +122,6 @@ class DoctorServiceProvider extends ServiceProvider
 
             // Livewire
             $registry->register(MissingLivewireComponentCheck::class);
-            $registry->register(WireModelMissingPropertyCheck::class);
-            $registry->register(MissingLivewireActionMethodCheck::class);
 
             // Queue / Jobs
             $registry->register(FailedJobTableMissingCheck::class);
@@ -154,10 +130,8 @@ class DoctorServiceProvider extends ServiceProvider
             $registry->register(JobDependencyResolutionCheck::class);
             $registry->register(JobHasHandleMethodCheck::class);
             $registry->register(MissingJobClassCheck::class);
-            $registry->register(QueueDriverCheck::class);
 
             // Config
-            $registry->register(ConfigCacheIncompatibleValuesCheck::class);
             $registry->register(EarlyConfigAccessCheck::class);
             $registry->register(AbortIfWrongHttpCodeCheck::class);
 
@@ -168,7 +142,6 @@ class DoctorServiceProvider extends ServiceProvider
             $registry->register(AnonymousComponentCheck::class);
             $registry->register(ComponentClassCheck::class);
             $registry->register(ComponentNamespaceCheck::class);
-            $registry->register(ComponentViewCheck::class);
 
             // Routes
             $registry->register(DuplicateRouteNamesCheck::class);
@@ -179,7 +152,6 @@ class DoctorServiceProvider extends ServiceProvider
 
             // Schema
             $registry->register(ColumnMismatchCheck::class);
-            $registry->register(ForeignKeyCheck::class);
             $registry->register(InvalidCastsCheck::class);
 
             // Views
@@ -193,6 +165,5 @@ class DoctorServiceProvider extends ServiceProvider
                 CacheClearCommand::class,
             ]);
         }
-
     }
 }
