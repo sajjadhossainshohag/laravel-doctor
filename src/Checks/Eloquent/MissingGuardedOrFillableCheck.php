@@ -2,11 +2,15 @@
 
 namespace SajjadHossain\Doctor\Checks\Eloquent;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Stmt\Class_;
+use PhpParser\Node\Stmt\Property;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class MissingGuardedOrFillableCheck implements HealthCheck
+class MissingGuardedOrFillableCheck extends PhpAstCheck
 {
     private array $scanPaths = [];
 
@@ -36,77 +40,157 @@ class MissingGuardedOrFillableCheck implements HealthCheck
         $locations = [];
         $paths = $this->scanPaths ?: [app_path('Models')];
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $visitor = new class($file['content']) extends NodeVisitorAbstract {
+                private string $fileContent;
+                private bool $inModel = false;
+                private bool $hasFillable = false;
+                private bool $hasGuarded = false;
+                private bool $hasGuardedAttr = false;
+                private bool $hasUnguardedAttr = false;
+                private ?string $modelName = null;
+                public array $models = [];
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
+                public function __construct(string $fileContent) { $this->fileContent = $fileContent; }
+
+                public function enterNode(Node $node): void
+                {
+                    if ($node instanceof Class_) {
+                        if ($node->extends instanceof Node\Name) {
+                            $parts = explode('\\', $node->extends->toString());
+                            $baseName = end($parts);
+                            if ($baseName !== 'Model') {
+                                return;
+                            }
+                        } else {
+                            return;
+                        }
+                        if ($node->isAbstract()) {
+                            return;
+                        }
+
+                        $this->inModel = true;
+                        $this->modelName = $node->name instanceof Node\Identifier ? $node->name->toString() : null;
+                        $this->hasFillable = false;
+                        $this->hasGuarded = false;
+                        $this->hasGuardedAttr = false;
+                        $this->hasUnguardedAttr = false;
+
+                        foreach ($node->attrGroups as $attrGroup) {
+                            foreach ($attrGroup->attrs as $attr) {
+                                if ($attr->name instanceof Node\Name) {
+                                    $name = $attr->name->toString();
+                                    if ($name === 'Guarded') { $this->hasGuardedAttr = true; }
+                                    if ($name === 'Unguarded') { $this->hasUnguardedAttr = true; }
+                                }
+                            }
+                        }
+                        return;
+                    }
+
+                    if (!$this->inModel) {
+                        return;
+                    }
+
+                    // Track properties
+                    if ($node instanceof Property) {
+                        if ($node->isStatic()) {
+                            return;
+                        }
+                        $propName = null;
+                        if (!empty($node->props)) {
+                            $prop = $node->props[0];
+                            if ($prop->name instanceof Node\VarLikeIdentifier) {
+                                $propName = $prop->name->toString();
+                            }
+                        }
+                        if ($propName === 'fillable' && $prop->default !== null) {
+                            $this->hasFillable = true;
+                        }
+                        if ($propName === 'guarded' && $prop->default !== null) {
+                            $this->hasGuarded = true;
+                        }
+                        return;
+                    }
+
+                    // When we leave the class, evaluate
+                    if ($node === null) {
+                        return;
+                    }
                 }
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+                public function leaveNode(Node $node): void
+                {
+                    if ($node instanceof Class_ && $this->inModel) {
+                        $this->inModel = false;
 
-                // Only consider actual Eloquent models. Skip abstract classes
-                // and non-Model classes.
-                if (! preg_match('/class\s+(\w+)\s+extends\s+Model\b/', $stripped, $classM)) {
-                    continue;
+                        if ($this->hasFillable || $this->hasGuarded || $this->hasGuardedAttr || $this->hasUnguardedAttr) {
+                            return;
+                        }
+
+                        if ($this->modelName !== null && $this->modelName !== '') {
+                            $fqcn = $this->resolveFqcnHelper($this->fileContent, $this->modelName);
+                            if ($fqcn !== null && $this->inheritsFillableOrGuarded($fqcn)) {
+                                return;
+                            }
+                        }
+
+                        $this->models[] = [
+                            'name' => $this->modelName ?? 'unknown',
+                            'line' => $node->getLine(),
+                        ];
+                    }
                 }
 
-                $className = $classM[1];
-
-                // Detect $fillable / $guarded on the class itself, taking
-                // any visibility modifier (public / protected / private),
-                // any optional type, and any array initializer (including
-                // the empty `[]` literal — explicitly setting
-                // `$guarded = []` is intentional "mass-assign everything"
-                // and counts as a deliberate declaration).
-                $hasFillable = (bool) preg_match(
-                    '/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$fillable\s*=\s*\[/s',
-                    $stripped
-                );
-                $hasGuarded = (bool) preg_match(
-                    '/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$guarded\s*=\s*\[/s',
-                    $stripped
-                );
-                // Also detect the rare single-string form: $guarded = '*';
-                // (Laravel's old default).
-                if (! $hasGuarded) {
-                    $hasGuarded = (bool) preg_match(
-                        '/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$guarded\s*=\s*[\'"][^\'"]+[\'"]\s*;/',
-                        $stripped
-                    );
+                private function resolveFqcnHelper(string $content, string $className): ?string
+                {
+                    if (preg_match('/^\s*namespace\s+([\w\\\\]+);/m', $content, $ns)) {
+                        return $ns[1] . '\\' . $className;
+                    }
+                    return null;
                 }
 
-                $hasUnguardedAttr = (bool) preg_match('/#\s*\[\s*Unguarded\b/', $stripped);
-                $hasGuardedAttr = (bool) preg_match('/#\s*\[\s*Guarded\b/', $stripped);
-
-                if ($hasFillable || $hasGuarded || $hasGuardedAttr || $hasUnguardedAttr) {
-                    // User has declared one of them — assume they know.
-                    continue;
+                private function inheritsFillableOrGuarded(string $fqcn): bool
+                {
+                    if (!class_exists($fqcn)) {
+                        return false;
+                    }
+                    try {
+                        $ref = new \ReflectionClass($fqcn);
+                        $current = $ref;
+                        while ($current) {
+                            if (str_starts_with($current->getName(), 'Illuminate\\')) {
+                                break;
+                            }
+                            foreach (['fillable', 'guarded'] as $prop) {
+                                if ($current->hasProperty($prop)) {
+                                    $p = $current->getProperty($prop);
+                                    if ($p->isStatic() || $p->getDeclaringClass()->getName() !== $current->getName()) {
+                                        continue;
+                                    }
+                                    return true;
+                                }
+                            }
+                            $current = $current->getParentClass();
+                        }
+                    } catch (\Throwable) {
+                    }
+                    return false;
                 }
+            };
 
-                // Check inherited configurations: walk up the parent chain
-                // and look for $fillable / $guarded there. PHP reflection
-                // handles traits and deep inheritance correctly.
-                if ($this->hasInheritedFillableOrGuarded($className)) {
-                    continue;
-                }
+            $this->traverse($stmts, $visitor);
 
-                // Neither $fillable nor $guarded is declared. This is risky
-                // because the model's mass-assignment behaviour is implicit
-                // (Laravel's default $guarded = ['*'] applies), and the
-                // developer may not have intended that. Flag it.
+            foreach ($visitor->models as $modelInfo) {
                 $locations[] = [
-                    'file' => $file->getRealPath(),
-                    'issue' => "Model '{$className}' declares neither \$fillable nor \$guarded — mass-assignment behaviour is implicit and likely unintended",
+                    'file' => $file['path'],
+                    'line' => $modelInfo['line'],
+                    'issue' => "Model '{$modelInfo['name']}' declares neither \$fillable nor \$guarded — mass-assignment behaviour is implicit and likely unintended",
                 ];
             }
         }
@@ -126,53 +210,9 @@ class MissingGuardedOrFillableCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' model(s) have unsafe mass-assignment configuration.',
+            message: count($locations) . ' model(s) have unsafe mass-assignment configuration.',
             locations: $locations,
             suggestion: 'Add `protected $fillable = [...]` to limit which attributes can be mass-assigned.',
         );
-    }
-
-    /**
-     * Determine whether the class (or any parent / trait it uses) declares
-     * a $fillable or $guarded property. Reflection handles inheritance and
-     * traits automatically.
-     */
-    private function hasInheritedFillableOrGuarded(string $className): bool
-    {
-        if (! class_exists($className)) {
-            // We can't resolve via reflection (e.g. fixtures without
-            // autoload) — fall back to scanning the file itself which
-            // is what the regex already does, so this returns false
-            // here only when the regex above didn't find anything.
-            return false;
-        }
-        try {
-            $ref = new \ReflectionClass($className);
-            // Check the class itself and all parents for these props.
-            $candidates = [$ref];
-            while ($parent = $ref->getParentClass()) {
-                $candidates[] = $parent;
-                $ref = $parent;
-            }
-            foreach ($candidates as $cls) {
-                foreach (['fillable', 'guarded'] as $prop) {
-                    if ($cls->hasProperty($prop)) {
-                        $p = $cls->getProperty($prop);
-                        if ($p->isStatic()) {
-                            continue;
-                        }
-                        // Has the property been given a default value?
-                        $defaults = $cls->getDefaultProperties();
-                        if (array_key_exists($prop, $defaults)) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        } catch (\Throwable) {
-            // ignore reflection errors
-        }
-
-        return false;
     }
 }

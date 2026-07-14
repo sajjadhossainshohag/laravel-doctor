@@ -2,12 +2,26 @@
 
 namespace SajjadHossain\Doctor\Checks\Middleware;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\FuncCall;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\Node\Stmt\ClassMethod;
+use PhpParser\Node\Stmt\TryCatch;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class TerminateMethodThrowsCheck implements HealthCheck
+class TerminateMethodThrowsCheck extends PhpAstCheck
 {
+    private array $scanPaths = [];
+
+    public function withPaths(array $paths): static
+    {
+        $this->scanPaths = $paths;
+        return $this;
+    }
+
     public function name(): string
     {
         return 'Middleware terminate() May Throw';
@@ -26,53 +40,102 @@ class TerminateMethodThrowsCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $paths = [app_path('Http/Middleware')];
+        $paths = $this->scanPaths ?: [app_path('Http/Middleware')];
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        $externalPrefixes = ['DB', 'Http', 'Log', 'Storage', 'Mail', 'Redis', 'Cache'];
+        $riskyFuncs = ['event', 'dispatch'];
+
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $visitor = new class($externalPrefixes, $riskyFuncs) extends NodeVisitorAbstract {
+                private array $prefixes;
+                private array $funcs;
+                private bool $inTerminate = false;
+                private bool $hasTryCatch = false;
+                public array $issues = [];
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
+                public function __construct(array $prefixes, array $funcs)
+                {
+                    $this->prefixes = $prefixes;
+                    $this->funcs = $funcs;
                 }
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+                public function enterNode(Node $node): void
+                {
+                    if ($node instanceof ClassMethod
+                        && $node->name instanceof Node\Identifier
+                        && $node->name->toString() === 'terminate'
+                    ) {
+                        $this->inTerminate = true;
+                        $this->hasTryCatch = false;
+                        return;
+                    }
 
-                if (! preg_match('/function\s+terminate\s*\([^)]*\)\s*\{(.*?)\n\s*\}/s', $stripped, $m)) {
-                    continue;
+                    if (!$this->inTerminate) {
+                        return;
+                    }
+
+                    if ($node instanceof TryCatch) {
+                        $this->hasTryCatch = true;
+                        return;
+                    }
+
+                    if ($this->hasTryCatch) {
+                        return;
+                    }
+
+                    $isExternal = false;
+
+                    if ($node instanceof StaticCall
+                        && $node->class instanceof Node\Name
+                    ) {
+                        $parts = explode('\\', $node->class->toString());
+                        $short = end($parts);
+                        if (in_array($short, $this->prefixes, true)) {
+                            $isExternal = true;
+                        }
+                    }
+
+                    if ($node instanceof FuncCall
+                        && $node->name instanceof Node\Name
+                    ) {
+                        $fn = $node->name->toString();
+                        if (in_array($fn, $this->funcs, true)) {
+                            $isExternal = true;
+                        }
+                    }
+
+                    if ($isExternal) {
+                        $this->issues[] = [
+                            'line' => $node->getLine(),
+                            'reason' => 'terminate() makes external calls without try/catch',
+                        ];
+                    }
                 }
 
-                $body = $m[1];
-                $hasExternalCall = (bool) preg_match(
-                    '/\b(DB::|Http::|Log::|Storage::|Mail::|Redis::|Cache::|event\s*\(|dispatch\s*\()/',
-                    $body
-                );
-                $hasTryCatch = (bool) preg_match('/\btry\s*\{/', $body);
-
-                // The previous version of this check claimed exceptions in
-                // terminate() are silently swallowed by the kernel. That is
-                // incorrect — the kernel calls $instance->terminate() without
-                // a try/catch (Illuminate\Foundation\Http\Kernel::terminateMiddleware).
-                // The response is already sent to the client by the time
-                // terminate() runs, so any exception can disrupt any
-                // post-send cleanup work and may surface in the SAPI log.
-                // We surface this as informational rather than as a failure,
-                // and recommend wrapping external calls in try/catch as a
-                // best practice.
-                if ($hasExternalCall && ! $hasTryCatch) {
-                    $locations[] = [
-                        'file' => $file->getRealPath(),
-                        'issue' => 'terminate() makes external calls (DB/HTTP/Log/etc.) without try/catch — wrap them to keep cleanup work resilient after the response is sent',
-                    ];
+                public function leaveNode(Node $node): void
+                {
+                    if ($node instanceof ClassMethod
+                        && $node->name instanceof Node\Identifier
+                        && $node->name->toString() === 'terminate'
+                    ) {
+                        $this->inTerminate = false;
+                    }
                 }
+            };
+
+            $this->traverse($stmts, $visitor);
+
+            foreach ($visitor->issues as $issue) {
+                $locations[] = [
+                    'file' => $file['path'],
+                    'line' => $issue['line'],
+                    'issue' => $issue['reason'] . ' — wrap them to keep cleanup work resilient after the response is sent',
+                ];
             }
         }
 
@@ -91,7 +154,7 @@ class TerminateMethodThrowsCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: true,
-            message: count($locations).' terminate() method(s) make external calls without try/catch. This is informational — the kernel does not silently swallow terminate exceptions, but cleanup work may still be disrupted.',
+            message: count($locations) . ' terminate() method(s) make external calls without try/catch.',
             locations: $locations,
             suggestion: 'Wrap terminate() logic in try/catch to keep cleanup work resilient after the response is sent.',
         );

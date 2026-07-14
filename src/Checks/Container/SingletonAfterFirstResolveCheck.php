@@ -2,11 +2,17 @@
 
 namespace SajjadHossain\Doctor\Checks\Container;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\PropertyFetch;
+use PhpParser\Node\Expr\Variable;
+use PhpParser\Node\Stmt\ClassMethod;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class SingletonAfterFirstResolveCheck implements HealthCheck
+class SingletonAfterFirstResolveCheck extends PhpAstCheck
 {
     private array $scanPaths = [];
 
@@ -37,61 +43,37 @@ class SingletonAfterFirstResolveCheck implements HealthCheck
         $paths = $this->scanPaths ?: [app_path('Providers')];
         $ignore = config('doctor.ignore.container', []);
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            if ($this->isIgnored($file['path'], $ignore)) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
+                continue;
+            }
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
+            $methods = $this->extractMethodBodies($stmts);
 
-                $realPath = $file->getRealPath();
-                if ($this->isIgnored($realPath, $ignore)) {
-                    continue;
-                }
+            $registerBody = $methods['register'] ?? '';
+            $bootBody = $methods['boot'] ?? '';
 
-                $content = file_get_contents($realPath);
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+            // Check boot() has a singleton
+            if (preg_match('/\$this->app->singleton\s*\(/', $bootBody) !== 1) {
+                continue;
+            }
 
-                // The real issue this check is meant to surface is a
-                // singleton being registered in boot() AFTER some other
-                // provider has already resolved the abstract during
-                // register(). Detecting that reliably requires runtime
-                // container tracing. As a heuristic, we only flag when:
-                //   1) boot() calls $this->app->singleton(...) AND
-                //   2) the SAME file also calls ->make(...), ->resolve(...),
-                //      or another singleton/bind for the same abstract in
-                //      register() — which would indicate the abstract might
-                //      already have been resolved earlier.
-                //
-                // A singleton in boot() WITHOUT any same-file early resolve
-                // is the standard, documented Laravel pattern and is NOT a
-                // problem.
-                if (! $this->hasBootSingleton($stripped)) {
-                    continue;
-                }
+            $singletonAbstract = $this->extractFirstSingletonAbstract($bootBody);
+            if ($singletonAbstract === null) {
+                continue;
+            }
 
-                $singletonAbstract = $this->extractFirstSingletonAbstract($stripped);
-                if ($singletonAbstract === null) {
-                    // Could not determine the abstract — we can't verify
-                    // it's the same one being resolved in register().
-                    continue;
-                }
-
-                if ($this->resolveHitsAbstract($stripped, $singletonAbstract)) {
-                    $locations[] = [
-                        'file' => $realPath,
-                        'issue' => "singleton('{$singletonAbstract}') registered in boot() but the same file appears to resolve the same abstract earlier in register()",
-                        'value' => 'Move the singleton binding to register() to avoid double construction.',
-                    ];
-                }
+            if ($registerBody !== '' && $this->resolveHitsAbstract($registerBody, $singletonAbstract)) {
+                $locations[] = [
+                    'file' => $file['path'],
+                    'issue' => "singleton('{$singletonAbstract}') registered in boot() but the same file appears to resolve the same abstract earlier in register()",
+                    'value' => 'Move the singleton binding to register() to avoid double construction.',
+                ];
             }
         }
 
@@ -110,41 +92,47 @@ class SingletonAfterFirstResolveCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' singleton(s) registered in boot() after a possible earlier resolve.',
+            message: count($locations) . ' singleton(s) registered in boot() after a possible earlier resolve.',
             locations: $locations,
             suggestion: 'Register the singleton in register() so that it is in place before any provider resolves it.',
         );
     }
 
-    private function hasBootSingleton(string $content): bool
+    private function extractMethodBodies(array $stmts): array
     {
-        $body = $this->extractMethodBody($content, 'boot');
-        if ($body === null) {
-            return false;
-        }
+        $bodies = [];
+        $visitor = new class($bodies) extends NodeVisitorAbstract {
+            private array $bodies;
+            public function __construct(array &$bodies) { $this->bodies = &$bodies; }
+            public function enterNode(Node $node): void
+            {
+                if ($node instanceof ClassMethod
+                    && $node->name instanceof Node\Identifier
+                    && in_array($node->name->toString(), ['register', 'boot'], true)
+                    && $node->stmts !== null
+                ) {
+                    $content = '';
+                    foreach ($node->stmts as $stmt) {
+                        $content .= (new \PhpParser\PrettyPrinter\Standard())->prettyPrint([$stmt]);
+                    }
+                    $this->bodies[$node->name->toString()] = $content;
+                }
+            }
+        };
 
-        return (bool) preg_match('/\$this->app->singleton\s*\(/', $body);
+        $this->traverse($stmts, $visitor);
+
+        return $bodies;
     }
 
-    /**
-     * Extract the abstract key from the first $this->app->singleton(...) call
-     * in boot(). The first argument may be a quoted string or ::class.
-     */
-    private function extractFirstSingletonAbstract(string $content): ?string
+    private function extractFirstSingletonAbstract(string $body): ?string
     {
-        $body = $this->extractMethodBody($content, 'boot');
-        if ($body === null) {
+        if (!preg_match('/\$this->app->singleton\s*\(/', $body, $m, PREG_OFFSET_CAPTURE)) {
             return null;
         }
-        if (! preg_match('/\$this->app->singleton\s*\(/', $body, $m, PREG_OFFSET_CAPTURE)) {
-            return null;
-        }
-        // Position cursor AT the opening '(' so readBalancedParens works.
-        $start = $m[0][1] + strlen($m[0][0]) - 1;
-        $args = $this->readBalancedParens($body, $start);
-        if ($args === null) {
-            return null;
-        }
+        $rest = substr($body, $m[0][1] + strlen($m[0][0]));
+        $args = $this->readBalancedParens($rest);
+
         $parts = $this->splitTopLevelArgs($args);
         $first = trim($parts[0] ?? '');
         if ($first === '') {
@@ -160,21 +148,8 @@ class SingletonAfterFirstResolveCheck implements HealthCheck
         return null;
     }
 
-    /**
-     * Detect in the same file a possible earlier resolve of the given
-     * abstract. Looks only at register() — that's where providers
-     * typically resolve things, and anything resolved there is in the
-     * container before boot() runs.
-     */
-    private function resolveHitsAbstract(string $content, string $abstract): bool
+    private function resolveHitsAbstract(string $registerBody, string $abstract): bool
     {
-        $registerBody = $this->extractMethodBody($content, 'register') ?? '';
-
-        // $this->app->make('foo') / resolve('foo') / bound('foo')
-        // We only flag a match when the FIRST argument is a quoted string
-        // matching $abstract (case-insensitive, since make/resolve keys
-        // are usually lowercase). Without that, we'd over-flag every
-        // generic ->make() call.
         $patterns = [
             '/\$this->app->make\s*\(\s*[\'"]' . preg_quote($abstract, '/') . '[\'"]/',
             '/\$this->app->resolve\s*\(\s*[\'"]' . preg_quote($abstract, '/') . '[\'"]/',
@@ -186,43 +161,17 @@ class SingletonAfterFirstResolveCheck implements HealthCheck
             }
         }
 
-        // Also catch ::class form: $this->app->make(Foo::class)
-        // Match the short class name against the abstract's last segment.
-        $abstractShort = strtolower(basename(str_replace('\\', '/', $abstract)));
-        if ($abstractShort !== '' && preg_match('/\$this->app->(?:make|resolve)\s*\(\s*[\w\\\\]+::class\s*\)/', $registerBody, $m)) {
-            // Extract the short class name from the first ::class match.
-            if (preg_match('/\$this->app->(?:make|resolve)\s*\(\s*([\w\\\\]+)::class\s*\)/', $registerBody, $cm)) {
-                $short = strtolower(basename(str_replace('\\', '/', $cm[1])));
-                if ($short === $abstractShort) {
-                    return true;
-                }
-            }
-        }
-
         return false;
     }
 
-    private function extractMethodBody(string $content, string $method): ?string
+    private function readBalancedParens(string $haystack): string
     {
-        // Allow optional return type between ) and { so modern
-        // `boot(): void` stubs are detected.
-        if (! preg_match('/function\s+'.preg_quote($method, '/').'\s*\([^)]*\)\s*(?::\s*[\\\\\w|&\[\]<>,\s]+)?\s*\{(.*?)\n\s*\}/s', $content, $m)) {
-            return null;
-        }
-
-        return $m[1];
-    }
-
-    private function readBalancedParens(string $haystack, int $open): ?string
-    {
-        if (! isset($haystack[$open]) || $haystack[$open] !== '(') {
-            return null;
-        }
         $depth = 0;
-        $i = $open;
+        $i = 0;
         $inString = false;
         $stringChar = '';
         $len = strlen($haystack);
+        $started = false;
         while ($i < $len) {
             $c = $haystack[$i];
             if ($inString) {
@@ -230,18 +179,20 @@ class SingletonAfterFirstResolveCheck implements HealthCheck
                 if ($c === $stringChar) { $inString = false; }
             } else {
                 if ($c === '\'' || $c === '"') { $inString = true; $stringChar = $c; }
-                elseif ($c === '(') { $depth++; }
-                elseif ($c === ')') {
+                elseif ($c === '(') {
+                    if (!$started) { $started = true; }
+                    $depth++;
+                } elseif ($c === ')') {
                     $depth--;
-                    if ($depth === 0) {
-                        return substr($haystack, $open + 1, $i - $open - 1);
+                    if ($depth === 0 && $started) {
+                        return substr($haystack, 0, $i);
                     }
                 }
             }
             $i++;
         }
 
-        return null;
+        return '';
     }
 
     private function splitTopLevelArgs(string $args): array

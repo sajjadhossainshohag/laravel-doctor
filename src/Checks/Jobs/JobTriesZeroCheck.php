@@ -2,11 +2,16 @@
 
 namespace SajjadHossain\Doctor\Checks\Jobs;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Stmt\Class_;
+use PhpParser\Node\Stmt\ClassMethod;
+use PhpParser\Node\Stmt\Property;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class JobTriesZeroCheck implements HealthCheck
+class JobTriesZeroCheck extends PhpAstCheck
 {
     private array $scanPaths = [];
 
@@ -36,71 +41,102 @@ class JobTriesZeroCheck implements HealthCheck
         $locations = [];
         $paths = $this->scanPaths ?: [app_path('Jobs')];
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $visitor = new class extends NodeVisitorAbstract {
+                private bool $inJobClass = false;
+                private bool $hasTriesZero = false;
+                private bool $hasRetryUntil = false;
+                private bool $hasTriesMethod = false;
+                private bool $hasBackoffProperty = false;
+                private bool $hasBackoffMethod = false;
+                private ?int $classLine = null;
+                public array $jobs = [];
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
+                public function enterNode(Node $node): void
+                {
+                    if ($node instanceof Class_) {
+                        if ($node->isAbstract()) return;
+                        $this->inJobClass = true;
+                        $this->classLine = $node->getLine();
+                        $this->hasTriesZero = false;
+                        $this->hasRetryUntil = false;
+                        $this->hasTriesMethod = false;
+                        $this->hasBackoffProperty = false;
+                        $this->hasBackoffMethod = false;
+                        return;
+                    }
+
+                    if (!$this->inJobClass) {
+                        return;
+                    }
+
+                    if ($node instanceof Property) {
+                        if ($node->isStatic()) return;
+                        $propName = null;
+                        if (!empty($node->props)) {
+                            $prop = $node->props[0];
+                            if ($prop->name instanceof Node\VarLikeIdentifier) {
+                                $propName = $prop->name->toString();
+                            }
+                        }
+
+                        if ($propName === 'tries' && $prop->default instanceof Node\Scalar\LNumber && $prop->default->value === 0) {
+                            $this->hasTriesZero = true;
+                        }
+                        if ($propName === 'backoff' && $prop->default !== null) {
+                            $this->hasBackoffProperty = true;
+                        }
+                        return;
+                    }
+
+                    if ($node instanceof ClassMethod) {
+                        if ($node->name instanceof Node\Identifier) {
+                            $name = $node->name->toString();
+                            if ($name === 'retryUntil') { $this->hasRetryUntil = true; }
+                            if ($name === 'tries') { $this->hasTriesMethod = true; }
+                            if ($name === 'backoff') { $this->hasBackoffMethod = true; }
+                        }
+                    }
                 }
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+                public function leaveNode(Node $node): void
+                {
+                    if ($node instanceof Class_ && $this->inJobClass) {
+                        $this->inJobClass = false;
 
-                // Allow typed properties (e.g. `public int $tries = 0;`) as well as
-                // untyped ones.
-                if (! preg_match('/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$tries\s*=\s*0\s*;/', $stripped)) {
-                    continue;
+                        if (!$this->hasTriesZero) {
+                            return;
+                        }
+                        if ($this->hasRetryUntil || $this->hasTriesMethod) {
+                            return;
+                        }
+
+                        $hasBackoff = $this->hasBackoffProperty || $this->hasBackoffMethod;
+                        $message = 'Job $tries is set to 0 with no retryUntil()/tries() — job will retry forever, which is rarely intended';
+                        if ($hasBackoff) {
+                            $message .= ' (note: $backoff/backoff() is the delay between retries, not a retry cap — it does NOT stop the infinite loop)';
+                        }
+
+                        $this->jobs[] = [
+                            'line' => $this->classLine ?? 0,
+                            'issue' => $message,
+                        ];
+                    }
                 }
+            };
 
-                // In Laravel, $tries = 0 means "retry forever" (unlimited
-                // attempts). This is intentional ONLY when the user
-                // provides an EXPLICIT CAP somewhere:
-                //
-                //   - retryUntil(): a method that returns a DateTime /
-                //                   timestamp after which retries stop.
-                //   - tries():      a method that returns an int retry
-                //                   cap (overrides the property).
-                //
-                // $backoff is the DELAY between retries — it does NOT
-                // cap retry count. A job with `$tries = 0; $backoff = 30;`
-                // retries forever with 30-second gaps. It must still be
-                // flagged.
-                $hasRetryUntil = (bool) preg_match('/function\s+retryUntil\s*\(/', $stripped);
-                $hasTriesMethod = (bool) preg_match('/function\s+tries\s*\(\s*\)/', $stripped);
+            $this->traverse($stmts, $visitor);
 
-                // $backoff detection is intentionally kept ONLY for
-                // diagnostic purposes — it does NOT short-circuit the
-                // warning. We surface it in the issue message so the
-                // developer understands that the property is present but
-                // unrelated to retry count.
-                $hasBackoffProperty = (bool) preg_match(
-                    '/(?:public|protected|private)\s+(?:\??[\w\\\\|&\[\]]+\s+)?\$backoff\s*=/',
-                    $stripped
-                );
-                $hasBackoffMethod = (bool) preg_match('/function\s+backoff\s*\(\s*\)/', $stripped);
-                $hasBackoff = $hasBackoffProperty || $hasBackoffMethod;
-
-                if ($hasRetryUntil || $hasTriesMethod) {
-                    // $tries = 0 is intentional — no warning.
-                    continue;
-                }
-
-                $message = 'Job $tries is set to 0 with no retryUntil()/tries() — job will retry forever, which is rarely intended';
-                if ($hasBackoff) {
-                    $message .= ' (note: $backoff/backoff() is the delay between retries, not a retry cap — it does NOT stop the infinite loop)';
-                }
-
+            foreach ($visitor->jobs as $jobInfo) {
                 $locations[] = [
-                    'file' => $file->getRealPath(),
-                    'issue' => $message,
+                    'file' => $file['path'],
+                    'line' => $jobInfo['line'],
+                    'issue' => $jobInfo['issue'],
                 ];
             }
         }
@@ -120,9 +156,9 @@ class JobTriesZeroCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' job(s) with $tries = 0 and no retry cap.',
+            message: count($locations) . ' job(s) with $tries = 0 and no retry cap.',
             locations: $locations,
-            suggestion: 'Set $tries to a positive integer (e.g. 3), or add retryUntil()/tries() to cap the retries. $backoff is the delay between retries and does NOT cap retries.',
+            suggestion: 'Set $tries to a positive integer (e.g. 3), or add retryUntil()/tries() to cap the retries.',
         );
     }
 }
