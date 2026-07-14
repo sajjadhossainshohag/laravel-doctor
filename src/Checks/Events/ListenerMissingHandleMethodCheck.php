@@ -8,6 +8,14 @@ use SajjadHossain\Doctor\Enums\Severity;
 
 class ListenerMissingHandleMethodCheck implements HealthCheck
 {
+    private array $scanPaths = [];
+
+    public function withPaths(array $paths): static
+    {
+        $this->scanPaths = $paths;
+        return $this;
+    }
+
     public function name(): string
     {
         return 'Listener Missing handle() Method';
@@ -26,7 +34,7 @@ class ListenerMissingHandleMethodCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $paths = [app_path('Listeners')];
+        $paths = $this->scanPaths ?: [app_path('Listeners')];
 
         foreach ($paths as $path) {
             if (! is_dir($path)) {

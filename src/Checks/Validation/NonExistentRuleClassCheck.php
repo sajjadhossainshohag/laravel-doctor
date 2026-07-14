@@ -8,6 +8,14 @@ use SajjadHossain\Doctor\Enums\Severity;
 
 class NonExistentRuleClassCheck implements HealthCheck
 {
+    private array $scanPaths = [];
+
+    public function withPaths(array $paths): static
+    {
+        $this->scanPaths = $paths;
+        return $this;
+    }
+
     public function name(): string
     {
         return 'Non-Existent Custom Rule Class';
@@ -26,7 +34,7 @@ class NonExistentRuleClassCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $paths = [app_path('Http/Requests'), app_path('Rules')];
+        $paths = $this->scanPaths ?: [app_path('Http/Requests'), app_path('Rules')];
 
         foreach ($paths as $path) {
             if (! is_dir($path)) {
