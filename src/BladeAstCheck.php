@@ -15,6 +15,11 @@ abstract class BladeAstCheck extends PhpAstCheck
 
         try {
             $compiled = app('blade.compiler')->compileString($rawBladeContent);
+            if (count(self::$compiledBladeCache) >= parent::MAX_FILE_CACHE) {
+                reset(self::$compiledBladeCache);
+                $firstKey = key(self::$compiledBladeCache);
+                unset(self::$compiledBladeCache[$firstKey]);
+            }
             self::$compiledBladeCache[$key] = $compiled;
             return $compiled;
         } catch (\Throwable) {

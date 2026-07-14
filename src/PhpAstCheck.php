@@ -10,10 +10,10 @@ use SajjadHossain\Doctor\Contracts\HealthCheck;
 
 abstract class PhpAstCheck implements HealthCheck
 {
+    protected const MAX_FILE_CACHE = 1000;
+
     private static ?Parser $sharedParser = null;
     private static array $fileContentCache = [];
-    private static array $parsedAstCache = [];
-    private static array $strippedContentCache = [];
 
     protected function parser(): Parser
     {
@@ -22,31 +22,18 @@ abstract class PhpAstCheck implements HealthCheck
 
     protected function stripComments(string $content): string
     {
-        $key = md5($content);
-        if (isset(self::$strippedContentCache[$key])) {
-            return self::$strippedContentCache[$key];
-        }
+        $content = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
+        $content = preg_replace('#/\*.*?\*/#s', '', $content);
+        $content = preg_replace('!//[^\n]*!', '', $content);
 
-        $stripped = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
-        $stripped = preg_replace('#/\*.*?\*/#s', '', $stripped);
-        $stripped = preg_replace('!//[^\n]*!', '', $stripped);
-
-        return self::$strippedContentCache[$key] = $stripped;
+        return $content;
     }
 
     protected function parse(string $code): ?array
     {
-        $key = md5($code);
-        if (array_key_exists($key, self::$parsedAstCache)) {
-            return self::$parsedAstCache[$key];
-        }
-
         try {
-            $stmts = $this->parser()->parse($code);
-            self::$parsedAstCache[$key] = $stmts;
-            return $stmts;
+            return $this->parser()->parse($code);
         } catch (\PhpParser\Error) {
-            self::$parsedAstCache[$key] = null;
             return null;
         }
     }
@@ -88,6 +75,11 @@ abstract class PhpAstCheck implements HealthCheck
                 $cacheKey = $realPath . '|' . $mtime;
 
                 if (!isset(self::$fileContentCache[$cacheKey])) {
+                    if (count(self::$fileContentCache) >= self::MAX_FILE_CACHE) {
+                        reset(self::$fileContentCache);
+                        $firstKey = key(self::$fileContentCache);
+                        unset(self::$fileContentCache[$firstKey]);
+                    }
                     self::$fileContentCache[$cacheKey] = file_get_contents($realPath);
                 }
 
