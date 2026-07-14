@@ -3,12 +3,15 @@
 namespace SajjadHossain\Doctor\Checks\Routes;
 
 use Illuminate\Support\Facades\Route;
+use SajjadHossain\Doctor\Concerns\ResolvesMiddlewareAliases;
 use SajjadHossain\Doctor\Contracts\HealthCheck;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
 
 class InvalidMiddlewareCheck implements HealthCheck
 {
+    use ResolvesMiddlewareAliases;
+
     public function name(): string
     {
         return 'Invalid Route Middleware';
@@ -81,37 +84,4 @@ class InvalidMiddlewareCheck implements HealthCheck
         );
     }
 
-    private function getRegisteredAliases(): array
-    {
-        $aliases = [];
-
-        $kernel = app(\Illuminate\Contracts\Http\Kernel::class);
-        if (method_exists($kernel, 'getRouteMiddleware')) {
-            $aliases = array_merge($aliases, array_keys($kernel->getRouteMiddleware()));
-        }
-
-        $router = app('router');
-        if (method_exists($router, 'getMiddleware')) {
-            $aliases = array_merge($aliases, array_keys($router->getMiddleware()));
-        }
-
-        return array_values(array_unique($aliases));
-    }
-
-    private function getRegisteredGroups(): array
-    {
-        $groups = [];
-
-        $kernel = app(\Illuminate\Contracts\Http\Kernel::class);
-        if (method_exists($kernel, 'getMiddlewareGroups')) {
-            $groups = array_merge($groups, array_keys($kernel->getMiddlewareGroups()));
-        }
-
-        $router = app('router');
-        if (method_exists($router, 'getMiddlewareGroups')) {
-            $groups = array_merge($groups, array_keys($router->getMiddlewareGroups()));
-        }
-
-        return array_values(array_unique($groups));
-    }
 }
