@@ -3,7 +3,6 @@
 namespace SajjadHossain\Doctor\Output;
 
 use Illuminate\Console\OutputStyle;
-use Laravel\Prompts\Themes\Default\Concerns\DrawsBoxes;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 
 use function Laravel\Prompts\note;
@@ -19,12 +18,8 @@ class ConsoleRenderer
         $passed = 0;
         $failed = 0;
         $rows = [];
-        $failedDetails = [];
+        $failedByCategory = [];
 
-        // Group by category
-        $grouped = $this->groupByCategory($results);
-
-        // Summary table
         foreach ($results as $result) {
             $icon = $result->passed ? '✓' : '✗';
             $severity = $result->passed ? '' : strtoupper($result->severity->value);
@@ -40,27 +35,17 @@ class ConsoleRenderer
                 $passed++;
             } else {
                 $failed++;
-                $failedDetails[] = $result;
+                $failedByCategory[$result->category][] = $result;
             }
         }
 
-        // Intro
         info('Laravel Doctor — Code Health Scan');
+        table(['', 'Category', 'Check', 'Severity'], $rows);
 
-        // Results table
-        table(
-            ['', 'Category', 'Check', 'Severity'],
-            $rows,
-        );
-
-        // Failed check details
-        if (! empty($failedDetails)) {
-            foreach ($failedDetails as $result) {
-                $this->renderFailure($result, $verbose);
-            }
+        if (! empty($failedByCategory)) {
+            $this->renderIssuesTable($failedByCategory, $verbose);
         }
 
-        // Summary
         $durationText = $duration > 0 ? number_format($duration / 1000, 2) . 's' : '';
 
         if ($failed === 0) {
@@ -70,50 +55,114 @@ class ConsoleRenderer
         }
     }
 
-    private function renderFailure(CheckResult $result, bool $verbose): void
+    /**
+     * @param array<string, CheckResult[]> $failedByCategory
+     */
+    private function renderIssuesTable(array $failedByCategory, bool $verbose): void
     {
-        $level = $result->severity->value === 'error' ? 'error' : 'warning';
-        $renderer = $level === 'error' ? '\Laravel\Prompts\error' : '\Laravel\Prompts\warning';
+        $allRows = [];
+        $suggestions = [];
 
-        $renderer($result->check);
-        note($result->message, $level);
+        foreach ($failedByCategory as $category => $results) {
+            foreach ($results as $result) {
+                $severityIcon = $result->severity->value === 'error' ? '✗' : '!';
+                $checkName = $result->check;
 
-        if (! empty($result->locations)) {
-            $locRows = [];
-            foreach (array_slice($result->locations, 0, $verbose ? 100 : 5) as $loc) {
-                $file = $loc['file'] ?? '';
-                $line = $loc['line'] ?? '';
-                $issue = $loc['issue'] ?? ($loc['view'] ?? $loc['layout'] ?? $loc['component'] ?? $loc['middleware'] ?? '');
-                $locRows[] = [$file, $line, $issue];
-            }
+                foreach ($result->locations as $loc) {
+                    $file = $this->relativePath($loc['file'] ?? '');
+                    $line = $loc['line'] ?? '-';
+                    $detail = $this->extractLocationDetail($loc);
 
-            if (! empty($locRows)) {
-                table(
-                    ['File', 'Line', 'Detail'],
-                    $locRows,
-                );
-            }
+                    $allRows[] = [
+                        $severityIcon,
+                        $checkName,
+                        $file,
+                        $line,
+                        $detail,
+                    ];
+                }
 
-            if (! $verbose && count($result->locations) > 5) {
-                note('... and ' . (count($result->locations) - 5) . ' more (use -v for full list)', 'info');
+                if (empty($result->locations)) {
+                    $allRows[] = [
+                        $severityIcon,
+                        $checkName,
+                        '',
+                        '-',
+                        $result->message,
+                    ];
+                }
+
+                if ($result->suggestion) {
+                    $suggestions[$checkName] = $result->suggestion;
+                }
             }
         }
 
-        if ($result->suggestion) {
-            note($result->suggestion, $level);
+        // Cap rows when not verbose (prevent flood)
+        $totalIssues = count($allRows);
+        $capped = ! $verbose && $totalIssues > 20;
+        $rows = $capped ? array_slice($allRows, 0, 20) : $allRows;
+
+        warning('Issues Found');
+
+        table(
+            ['', 'Check', 'File', 'Line', 'Detail'],
+            $rows,
+        );
+
+        if ($capped) {
+            note("... and " . ($totalIssues - 20) . " more (re-run with -v for the full list)", 'info');
+        }
+
+        if (! empty($suggestions)) {
+            info('Suggestions');
+            foreach ($suggestions as $check => $suggestion) {
+                note("{$check}: {$suggestion}", 'info');
+            }
         }
     }
 
-    /**
-     * @param CheckResult[] $results
-     * @return array<string, CheckResult[]>
-     */
-    private function groupByCategory(array $results): array
+    private function relativePath(string $path): string
     {
-        $grouped = [];
-        foreach ($results as $result) {
-            $grouped[$result->category][] = $result;
+        $base = base_path();
+
+        if ($base && str_starts_with($path, $base)) {
+            return ltrim(substr($path, strlen($base)), '/\\');
         }
-        return $grouped;
+
+        return $path;
+    }
+
+    private function extractLocationDetail(array $loc): string
+    {
+        if (isset($loc['middleware'])) {
+            return 'middleware: ' . $loc['middleware'];
+        }
+
+        if (isset($loc['uri'], $loc['name'])) {
+            $name = $loc['name'] !== '(unnamed)' ? $loc['name'] : $loc['uri'];
+            return $name;
+        }
+
+        // ValueVsFirstOnNullCheck style
+        if (isset($loc['issue'], $loc['value'])) {
+            return "{$loc['issue']}: `{$loc['value']}`";
+        }
+
+        // View-related
+        foreach (['layout', 'view', 'component'] as $key) {
+            if (isset($loc[$key])) {
+                return $loc[$key];
+            }
+        }
+
+        // Generic issue or fallback
+        return $loc['issue']
+            ?? $loc['message']
+            ?? $loc['table']
+            ?? $loc['column']
+            ?? $loc['class']
+            ?? $loc['route']
+            ?? json_encode($loc, JSON_UNESCAPED_SLASHES);
     }
 }
