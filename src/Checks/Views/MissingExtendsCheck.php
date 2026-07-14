@@ -2,11 +2,6 @@
 
 namespace SajjadHossain\Doctor\Checks\Views;
 
-use PhpParser\Node;
-use PhpParser\Node\Expr\MethodCall;
-use PhpParser\Node\Expr\Variable;
-use PhpParser\Node\Scalar\String_;
-use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\BladeAstCheck;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
@@ -15,7 +10,13 @@ use SajjadHossain\Doctor\Enums\Severity;
  * Validates @extends('layout.name') references using Laravel's
  * booted view finder (view()->exists()), which already incorporates
  * every loadViewsFrom() / View::addNamespace() mapping registered by
- * service providers — no manual path reconstruction.
+ * service providers.
+ *
+ * Uses a simple regex on the raw Blade source instead of the
+ * compiled-PHP AST because Blade compiles both @extends and @include
+ * to the identical $__env->make(...) call shape — only @extends
+ * emits the call in a footer appended after every other compiled
+ * statement, making AST‑based disambiguation fragile.
  *
  * CLI / multi‑theme limitation:
  * If a provider registers a namespace hint whose directory depends on
@@ -47,36 +48,13 @@ class MissingExtendsCheck extends BladeAstCheck
 
         foreach ($this->scanViewFiles() as $file) {
             $raw = $this->stripComments($file['content']);
-            $stmts = $this->parseBlade($raw);
-            if ($stmts === null) {
-                continue;
-            }
 
-            $lines = $this->mapDirectiveLines($raw, 'extends');
+            if (preg_match('/@extends\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $raw, $m, PREG_OFFSET_CAPTURE)) {
+                $layoutName = $m[1][0];
+                $offset = $m[0][1];
+                $line = substr_count(substr($raw, 0, $offset), "\n") + 1;
 
-            $visitor = new class extends NodeVisitorAbstract {
-                public array $layouts = [];
-
-                public function enterNode(Node $node): void
-                {
-                    if ($node instanceof MethodCall
-                        && $node->name instanceof Node\Identifier
-                        && $node->name->toString() === 'make'
-                        && $node->var instanceof Variable
-                        && $node->var->name === '__env'
-                        && count($node->args) > 0
-                        && $node->args[0]->value instanceof String_
-                    ) {
-                        $this->layouts[] = $node->args[0]->value->value;
-                    }
-                }
-            };
-
-            $this->traverse($stmts, $visitor);
-
-            foreach ($visitor->layouts as $layoutName) {
-                if (!view()->exists($layoutName)) {
-                    $line = count($lines) > 0 ? array_shift($lines) : null;
+                if (! view()->exists($layoutName)) {
                     $locations[] = [
                         'file' => $file['path'],
                         'line' => $line,

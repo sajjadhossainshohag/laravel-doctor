@@ -15,7 +15,13 @@ use SajjadHossain\Doctor\Enums\Severity;
  * Validates @component('component.name') references using Laravel's
  * booted view finder (view()->exists()), which already incorporates
  * every loadViewsFrom() / View::addNamespace() mapping registered by
- * service providers — no manual path reconstruction.
+ * service providers.
+ *
+ * @component compiles to $__env->startComponent('name') — a
+ * distinct method name that does NOT collide with @extends/@include.
+ * We intentionally only match startComponent / renderComponent;
+ * the generic $__env->make(...) catch-all was removed because it
+ * would misattribute extends/include calls as components.
  *
  * CLI / multi‑theme limitation:
  * If a provider registers a namespace hint whose directory depends on
@@ -52,8 +58,6 @@ class MissingComponentCheck extends BladeAstCheck
                 continue;
             }
 
-            $lines = $this->mapDirectiveLines($raw, 'component');
-
             $visitor = new class extends NodeVisitorAbstract {
                 public array $components = [];
 
@@ -61,17 +65,7 @@ class MissingComponentCheck extends BladeAstCheck
                 {
                     if ($node instanceof MethodCall
                         && $node->name instanceof Node\Identifier
-                        && ($node->name->toString() === 'startComponent' || $node->name->toString() === 'renderComponent')
-                        && $node->var instanceof Variable
-                        && $node->var->name === '__env'
-                        && count($node->args) > 0
-                        && $node->args[0]->value instanceof String_
-                    ) {
-                        $this->components[] = $node->args[0]->value->value;
-                    }
-                    if ($node instanceof MethodCall
-                        && $node->name instanceof Node\Identifier
-                        && $node->name->toString() === 'make'
+                        && in_array($node->name->toString(), ['startComponent', 'renderComponent'], true)
                         && $node->var instanceof Variable
                         && $node->var->name === '__env'
                         && count($node->args) > 0
@@ -83,6 +77,8 @@ class MissingComponentCheck extends BladeAstCheck
             };
 
             $this->traverse($stmts, $visitor);
+
+            $lines = $this->mapDirectiveLines($raw, 'component');
 
             foreach ($visitor->components as $componentName) {
                 if (!view()->exists($componentName)) {

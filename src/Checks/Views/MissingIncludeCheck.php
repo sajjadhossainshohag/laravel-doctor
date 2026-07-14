@@ -15,7 +15,13 @@ use SajjadHossain\Doctor\Enums\Severity;
  * Validates @include('view.name') references using Laravel's
  * booted view finder (view()->exists()), which already incorporates
  * every loadViewsFrom() / View::addNamespace() mapping registered by
- * service providers — no manual path reconstruction.
+ * service providers.
+ *
+ * Blade compiles both @extends and @include to the identical
+ * $__env->make(...) call. However, @extends emits its call in a
+ * footer *after* every inline statement, so the extends node is
+ * always the last matching node in traversal order. We detect and
+ * exclude that trailing node when an @extends exists in the source.
  *
  * CLI / multi‑theme limitation:
  * If a provider registers a namespace hint whose directory depends on
@@ -53,7 +59,7 @@ class MissingIncludeCheck extends BladeAstCheck
                 continue;
             }
 
-            $lines = $this->mapDirectiveLines($raw, 'include');
+            $hasExtends = (bool) preg_match('/@extends\s*\(/', $raw);
 
             $visitor = new class extends NodeVisitorAbstract {
                 public array $views = [];
@@ -75,10 +81,19 @@ class MissingIncludeCheck extends BladeAstCheck
 
             $this->traverse($stmts, $visitor);
 
+            // The @extends footer call is always the last matching
+            // $__env->make(...) node in traversal order — remove it
+            // so it is never misattributed as an @include.
+            if ($hasExtends && count($visitor->views) > 0) {
+                array_pop($visitor->views);
+            }
+
+            $lines = $this->mapDirectiveLines($raw, 'include');
+
             foreach ($visitor->views as $viewName) {
                 $scanned++;
                 $line = count($lines) > 0 ? array_shift($lines) : null;
-                if (!view()->exists($viewName)) {
+                if (! view()->exists($viewName)) {
                     $locations[] = [
                         'file' => $file['path'],
                         'line' => $line,

@@ -51,12 +51,25 @@ class MissingExtendsCheckTest extends TestCase
 
         config()->set('view.paths', [__DIR__.'/../../../Fixtures/Views/namespaced_missing']);
 
-        // extends-ns-missing.blade.php uses @extends('testns::layouts.missing')
-        // — the hint IS registered, but 'layouts/missing.blade.php' does
-        // NOT exist under the hinted directory.  This should still fail.
         $result = (new MissingExtendsCheck())->run();
 
         $this->assertCheckFailed($result, Severity::Warning);
         $this->assertStringContainsString('not found', strtolower($result->message));
+    }
+
+    /** @test */
+    public function it_does_not_cross_report_include_as_extends(): void
+    {
+        // A view with both a valid @extends and a broken @include.
+        // The extends must pass; the broken include must NOT leak
+        // into extends results (it belongs to MissingIncludeCheck).
+        $nsPath = __DIR__.'/../../../Fixtures/Views/ns-layouts';
+        app('view')->addNamespace('testns', $nsPath);
+
+        config()->set('view.paths', [__DIR__.'/../../../Fixtures/Views/namespaced']);
+
+        $result = (new MissingExtendsCheck())->run();
+
+        $this->assertCheckPassed($result, '@extends should pass; broken @include must not leak into extends results');
     }
 }
