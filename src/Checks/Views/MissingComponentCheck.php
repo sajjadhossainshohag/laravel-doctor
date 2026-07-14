@@ -11,6 +11,19 @@ use SajjadHossain\Doctor\BladeAstCheck;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
 
+/**
+ * Validates @component('component.name') references using Laravel's
+ * booted view finder (view()->exists()), which already incorporates
+ * every loadViewsFrom() / View::addNamespace() mapping registered by
+ * service providers — no manual path reconstruction.
+ *
+ * CLI / multi‑theme limitation:
+ * If a provider registers a namespace hint whose directory depends on
+ * run‑time request context (e.g. site_theme()), `php artisan doctor:scan`
+ * has no HTTP request, so the namespace resolves to whatever the
+ * *default* context produces. Validate additional themes by re‑running
+ * the scan after swapping the theme context.
+ */
 class MissingComponentCheck extends BladeAstCheck
 {
     public function name(): string
@@ -46,7 +59,6 @@ class MissingComponentCheck extends BladeAstCheck
 
                 public function enterNode(Node $node): void
                 {
-                    // $__env->startComponent('name')
                     if ($node instanceof MethodCall
                         && $node->name instanceof Node\Identifier
                         && ($node->name->toString() === 'startComponent' || $node->name->toString() === 'renderComponent')
@@ -57,7 +69,6 @@ class MissingComponentCheck extends BladeAstCheck
                     ) {
                         $this->components[] = $node->args[0]->value->value;
                     }
-                    // $__env->make('name', ...) with 'component' intent
                     if ($node instanceof MethodCall
                         && $node->name instanceof Node\Identifier
                         && $node->name->toString() === 'make'
