@@ -2,11 +2,16 @@
 
 namespace SajjadHossain\Doctor\Checks\Storage;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class S3UrlWithoutConfigCheck implements HealthCheck
+class S3UrlWithoutConfigCheck extends PhpAstCheck
 {
     public function name(): string
     {
@@ -31,56 +36,49 @@ class S3UrlWithoutConfigCheck implements HealthCheck
         $s3Config = config('filesystems.disks.s3');
         $hasBucket = ! empty($s3Config['bucket']);
         $hasRegion = ! empty($s3Config['region']);
-        $hasExplicitCreds = ! empty($s3Config['key']) && ! empty($s3Config['secret']);
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
-
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
+            $visitor = new class extends NodeVisitorAbstract {
+                public array $calls = [];
+                public function enterNode(Node $node): void {
+                    // Storage::disk('s3')->url(...)
+                    if ($node instanceof MethodCall
+                        && $node->name instanceof Node\Identifier
+                        && $node->name->toString() === 'url'
+                        && $node->var instanceof StaticCall
+                        && $node->var->class instanceof Node\Name
+                        && $node->var->class->toString() === 'Storage'
+                        && $node->var->name instanceof Node\Identifier
+                        && $node->var->name->toString() === 'disk'
+                    ) {
+                        if (count($node->var->args) > 0
+                            && $node->var->args[0]->value instanceof String_
+                            && $node->var->args[0]->value->value === 's3'
+                        ) {
+                            $this->calls[] = $node->getLine();
+                        }
+                    }
                 }
+            };
 
-                $content = file_get_contents($file->getRealPath());
+            $this->traverse($stmts, $visitor);
 
-                // Strip block + line comments so commented-out code does
-                // not match.
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
-
-                // We MUST NOT wipe quoted strings here — the detection
-                // regex needs the literal 's3' to match. Instead, we only
-                // need to ignore strings that happen to contain an
-                // `Storage::disk('s3')->url(` substring, which essentially
-                // never happens in real code (it would mean a string
-                // containing the exact call text).
-                if (! preg_match('/Storage::disk\s*\(\s*[\'"]s3[\'"]\s*\)\s*->\s*url\s*\(/', $stripped)) {
-                    continue;
-                }
-
-                // The S3 disk may legitimately be used without explicit
-                // key/secret when the application runs on AWS and picks
-                // up IAM role credentials via the default credential
-                // provider chain. We only flag when bucket or region
-                // is missing — those are always required.
+            foreach ($visitor->calls as $line) {
                 if (! $hasBucket || ! $hasRegion) {
                     $missing = [];
                     if (! $hasBucket) { $missing[] = 'bucket'; }
                     if (! $hasRegion) { $missing[] = 'region'; }
                     $locations[] = [
-                        'file' => $file->getRealPath(),
+                        'file' => $file['path'],
+                        'line' => $line,
                         'issue' => "Storage::disk('s3')->url() called but S3 is missing required config: ".implode(', ', $missing),
                     ];
                 }
-                // If key/secret are missing but bucket/region are present,
-                // the app may be using IAM/instance role credentials —
-                // that's valid. Don't flag.
             }
         }
 

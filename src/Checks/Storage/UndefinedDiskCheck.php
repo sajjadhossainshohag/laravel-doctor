@@ -2,11 +2,15 @@
 
 namespace SajjadHossain\Doctor\Checks\Storage;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class UndefinedDiskCheck implements HealthCheck
+class UndefinedDiskCheck extends PhpAstCheck
 {
     private array $scanPaths = [];
 
@@ -37,37 +41,48 @@ class UndefinedDiskCheck implements HealthCheck
         $paths = $this->scanPaths ?: config('doctor.scan_paths', [app_path(), resource_path('views')]);
         $disks = array_keys(config('filesystems.disks', []));
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $visitor = new class($disks) extends NodeVisitorAbstract {
+                private array $disks;
+                public array $issues = [];
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
+                public function __construct(array $disks) { $this->disks = $disks; }
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
-
-                // preg_match_all so EVERY Storage::disk() call per file
-                // is checked. The old check used preg_match which only
-                // inspected the first occurrence.
-                if (preg_match_all('/Storage::disk\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $m)) {
-                    foreach ($m[1] as $disk) {
-                        if (! in_array($disk, $disks, true)) {
-                            $locations[] = [
-                                'file' => $file->getRealPath(),
-                                'issue' => "Storage::disk('{$disk}') — '{$disk}' is not defined in config/filesystems.php",
+                public function enterNode(Node $node): void
+                {
+                    // Storage::disk('name')
+                    if ($node instanceof StaticCall
+                        && $node->class instanceof Node\Name
+                        && $node->class->toString() === 'Storage'
+                        && $node->name instanceof Node\Identifier
+                        && $node->name->toString() === 'disk'
+                        && count($node->args) > 0
+                        && $node->args[0]->value instanceof String_
+                    ) {
+                        $diskName = $node->args[0]->value->value;
+                        if (!in_array($diskName, $this->disks, true)) {
+                            $this->issues[] = [
+                                'line' => $node->getLine(),
+                                'disk' => $diskName,
                             ];
                         }
                     }
                 }
+            };
+
+            $this->traverse($stmts, $visitor);
+
+            foreach ($visitor->issues as $issue) {
+                $locations[] = [
+                    'file' => $file['path'],
+                    'line' => $issue['line'],
+                    'issue' => "Storage::disk('{$issue['disk']}') — '{$issue['disk']}' is not defined in config/filesystems.php",
+                ];
             }
         }
 

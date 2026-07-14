@@ -2,11 +2,18 @@
 
 namespace SajjadHossain\Doctor\Checks\Eloquent;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\Array_;
+use PhpParser\Node\Expr\ArrayItem;
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class WithCountOnUndefinedRelationshipCheck implements HealthCheck
+class WithCountOnUndefinedRelationshipCheck extends PhpAstCheck
 {
     private array $scanPaths = [];
 
@@ -36,110 +43,106 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
         $locations = [];
         $paths = $this->scanPaths ?: [app_path('Models'), app_path('Http/Controllers')];
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $modelImports = $file['content'] ? $this->findModelImports($file['content']) : [];
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
+            $visitor = new class extends NodeVisitorAbstract {
+                public array $calls = [];
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
-
-                // Collect all model imports in this file.
-                $modelImports = $this->findModelImports($stripped);
-
-                // Capture BOTH chained ->withCount() and static Model::withCount()
-                // forms AND the array form.
-                $calls = $this->extractWithCountCalls($stripped);
-
-                foreach ($calls as $call) {
-                    $rel = $call['rel'];
-                    if ($rel === null) {
-                        continue;
-                    }
-                    $modelClass = $this->guessModelClass($stripped, $modelImports, $call['isStatic']);
-
-                    // Can't reliably determine which model this ->withCount()
-                    // call applies to without runtime type information — skip
-                    // rather than report a false positive.
-                    if ($modelClass === null) {
-                        continue;
-                    }
-
-                    $existsOnAny = false;
-                    foreach ((array) $modelClass as $candidate) {
-                        if ($this->relationshipExists($candidate, $rel)) {
-                            $existsOnAny = true;
-                            break;
+                public function enterNode(Node $node): void
+                {
+                    // ->withCount('rel') — chained form
+                    if ($node instanceof MethodCall
+                        && $node->name instanceof Node\Identifier
+                        && $node->name->toString() === 'withCount'
+                        && count($node->args) > 0
+                    ) {
+                        $arg = $node->args[0]->value;
+                        // Single string: ->withCount('posts')
+                        if ($arg instanceof String_) {
+                            $rel = explode('.', $arg->value)[0];
+                            $this->calls[] = [
+                                'rel' => $rel,
+                                'isStatic' => false,
+                                'isArray' => false,
+                                'line' => $node->getLine(),
+                            ];
+                        } elseif ($arg instanceof Array_) {
+                            // Array form: ->withCount(['posts', 'comments'])
+                            foreach ($arg->items as $item) {
+                                if ($item instanceof ArrayItem && $item->value instanceof String_) {
+                                    $entry = $item->value->value;
+                                    $withoutAlias = trim((string) preg_replace('/\s+as\s+\w+$/i', '', $entry));
+                                    $base = explode('.', $withoutAlias)[0];
+                                    if ($base !== '') {
+                                        $this->calls[] = [
+                                            'rel' => $base,
+                                            'isStatic' => false,
+                                            'isArray' => true,
+                                            'line' => $node->getLine(),
+                                        ];
+                                    }
+                                }
+                            }
                         }
+                        return;
                     }
 
-                    // No "exists on any model" fallback — that previously
-                    // produced false positives (matching a same-named
-                    // relationship on an unrelated model) and false
-                    // negatives (the actual model was not in the scanned
-                    // set). Only flag when we have a candidate model and
-                    // none of the candidates defines the relationship.
-                    if (! $existsOnAny) {
-                        $modelLabel = is_array($modelClass) ? implode('|', $modelClass) : $modelClass;
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'issue' => "withCount('{$rel}') called but no candidate model ({$modelLabel}) declares a '{$rel}' relationship",
+                    // Model::withCount('rel') — static form
+                    if ($node instanceof StaticCall
+                        && $node->class instanceof Node\Name
+                        && $node->name instanceof Node\Identifier
+                        && $node->name->toString() === 'withCount'
+                        && count($node->args) > 0
+                        && $node->args[0]->value instanceof String_
+                    ) {
+                        $rel = explode('.', $node->args[0]->value->value)[0];
+                        $this->calls[] = [
+                            'rel' => $rel,
+                            'isStatic' => true,
+                            'isArray' => false,
+                            'line' => $node->getLine(),
+                            'className' => $node->class->toString(),
                         ];
                     }
                 }
+            };
 
-                // Array form: ->withCount(['posts as p_count', 'comments'])
-                // or:           ->withCount(['posts.comments'])
-                // We only check the BASE relationship name ('posts',
-                // 'comments') — the alias part and any nested-relation
-                // tail are irrelevant to whether the relationship exists
-                // on the immediate model.
-                if (preg_match_all('/->\s*withCount\s*\(\s*\[(.*?)\]\s*\)/s', $stripped, $arrMatches)) {
-                    foreach ($arrMatches[1] as $block) {
-                        if (! preg_match_all('/[\'"]([^\'"]+)[\'"]/', $block, $kv)) {
-                            continue;
-                        }
-                        foreach ($kv[1] as $entry) {
-                            // Strip 'as <alias>' aliasing.
-                            $withoutAlias = trim(preg_replace('/\s+as\s+\w+$/i', '', $entry));
-                            if ($withoutAlias === '') {
-                                continue;
-                            }
-                            // Use only the first dot-separated segment
-                            // (the relationship on the immediate model).
-                            $base = explode('.', $withoutAlias)[0];
-                            if ($base === '') {
-                                continue;
-                            }
-                            $candidate = $this->guessModelClass($stripped, $modelImports, false);
-                            if ($candidate === null) {
-                                continue;
-                            }
-                            $existsOnAny = false;
-                            foreach ((array) $candidate as $cand) {
-                                if ($this->relationshipExists($cand, $base)) {
-                                    $existsOnAny = true;
-                                    break;
-                                }
-                            }
-                            if (! $existsOnAny) {
-                                $locations[] = [
-                                    'file' => $file->getRealPath(),
-                                    'issue' => "withCount([...]) entry '{$base}' does not match a declared relationship",
-                                ];
-                            }
-                        }
+            $this->traverse($stmts, $visitor);
+
+            foreach ($visitor->calls as $call) {
+                $modelClass = $this->guessModelClassFromAst(
+                    $file['content'],
+                    $modelImports,
+                    $call['isStatic'],
+                    $call['className'] ?? null
+                );
+
+                if ($modelClass === null) {
+                    continue;
+                }
+
+                $candidates = (array) $modelClass;
+                $exists = false;
+                foreach ($candidates as $candidate) {
+                    if ($this->relationshipExists($candidate, $call['rel'])) {
+                        $exists = true;
+                        break;
                     }
+                }
+
+                if (!$exists) {
+                    $modelLabel = is_array($modelClass) ? implode('|', $modelClass) : $modelClass;
+                    $locations[] = [
+                        'file' => $file['path'],
+                        'line' => $call['line'],
+                        'issue' => "withCount('{$call['rel']}') called but no candidate model ({$modelLabel}) declares a '{$call['rel']}' relationship",
+                    ];
                 }
             }
         }
@@ -165,50 +168,6 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
         );
     }
 
-    /**
-     * Extract withCount() calls. Returns a list of
-     *   [ 'rel' => string|null, 'isStatic' => bool, 'isArray' => bool ]
-     * where:
-     *   - rel: the relationship name (or null if we couldn't extract one)
-     *   - isStatic: true for Model::withCount(), false for ->withCount()
-     *   - isArray: true for the array form; rel is null in that case (the
-     *     array form is handled separately below).
-     *
-     * @return list<array{rel: ?string, isStatic: bool, isArray: bool}>
-     */
-    private function extractWithCountCalls(string $content): array
-    {
-        $calls = [];
-
-        // Chained single-arg: ->withCount('posts')  OR  ->withCount('posts.comments')
-        //
-        // For dot-notation (nested relations) we only check the FIRST
-        // segment ('posts') — Laravel will resolve 'comments' via
-        // $post->comments() at runtime, so a literal method named
-        // 'posts.comments' would never exist on the parent model.
-        if (preg_match_all('/->\s*withCount\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $content, $m)) {
-            foreach ($m[1] as $rel) {
-                // Use only the first dot-separated segment for the
-                // relationship-existence check.
-                $baseRel = explode('.', $rel)[0];
-                $calls[] = ['rel' => $baseRel, 'isStatic' => false, 'isArray' => false];
-            }
-        }
-
-        // Static single-arg: Model::withCount('posts')  OR  Model::withCount('posts.comments')
-        if (preg_match_all('/\b(\w+)\s*::\s*withCount\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $content, $m2)) {
-            foreach ($m2[2] as $rel) {
-                $baseRel = explode('.', $rel)[0];
-                $calls[] = ['rel' => $baseRel, 'isStatic' => true, 'isArray' => false];
-            }
-        }
-
-        return $calls;
-    }
-
-    /**
-     * @return array<int, string>
-     */
     private function findModelImports(string $content): array
     {
         $models = [];
@@ -222,67 +181,26 @@ class WithCountOnUndefinedRelationshipCheck implements HealthCheck
         return $models;
     }
 
-    /**
-     * @param array<int, string> $modelImports
-     * @return string|string[]|null
-     */
-    private function guessModelClass(string $content, array $modelImports, bool $isStatic): string|array|null
-    {
-        if ($isStatic) {
-            // Strategy 1: explicit static ::withCount() — find the exact model.
-            if (preg_match('/\b(\w+)\s*::\s*withCount\s*\(/', $content, $m)) {
-                $shortName = $m[1];
-                // Try same-namespace first.
-                if (preg_match('/^namespace\s+([\w\\\\]+);/m', $content, $ns)) {
-                    $candidate = $ns[1] . '\\' . $shortName;
-                    if (class_exists($candidate) && is_subclass_of($candidate, 'Illuminate\Database\Eloquent\Model')) {
-                        return $candidate;
-                    }
-                }
-                foreach ($modelImports as $fqcn) {
-                    if (str_ends_with($fqcn, '\\' . $shortName)) {
-                        return $fqcn;
-                    }
-                }
-                // Could not resolve — do NOT fall back to all imports.
-                return null;
+    private function guessModelClassFromAst(
+        string $content,
+        array $modelImports,
+        bool $isStatic,
+        ?string $staticClassName
+    ): string|array|null {
+        if ($isStatic && $staticClassName !== null) {
+            $fqcn = $this->resolveFqcn($content, $staticClassName);
+            if ($fqcn && class_exists($fqcn) && is_subclass_of($fqcn, 'Illuminate\Database\Eloquent\Model')) {
+                return $fqcn;
             }
             return null;
         }
 
-        // Strategy 2: chained ->withCount() — try to discover the model by
-        // looking for static ::query() / ::with() / etc. on the same line,
-        // or by detecting $variable that was assigned from a known model
-        // earlier in the file. As a heuristic, fall back to "all model
-        // imports" — better to over-report (false positive on unrelated
-        // models) than to silently miss every chained call.
-        // To avoid the original false-positive problem (any model with the
-        // relationship matching), we instead look for a line-level
-        // indicator of which model this call operates on.
-        //
-        // If we cannot find a clear indicator, we return null and skip the
-        // call entirely. This is the conservative, no-false-positive path.
-
-        // Try to find a static ::query() / ::with() / similar preceding
-        // the chained call, e.g.:
-        //   User::query()->withCount('posts')->get();
-        // The chained receiver is the result of ::query(), so we can pick
-        // up the model name from the static call.
         if (preg_match_all('/\b(\w+)\s*::\s*(?:query|with|where|orderBy|select)\s*\([^)]*\)\s*->\s*withCount\s*\(/', $content, $staticCalls)) {
             $candidates = [];
             foreach ($staticCalls[1] as $shortName) {
-                if (preg_match('/^namespace\s+([\w\\\\]+);/m', $content, $ns)) {
-                    $candidate = $ns[1] . '\\' . $shortName;
-                    if (class_exists($candidate) && is_subclass_of($candidate, 'Illuminate\Database\Eloquent\Model')) {
-                        $candidates[] = $candidate;
-                        continue;
-                    }
-                }
-                foreach ($modelImports as $fqcn) {
-                    if (str_ends_with($fqcn, '\\' . $shortName)) {
-                        $candidates[] = $fqcn;
-                        break;
-                    }
+                $fqcn = $this->resolveFqcn($content, $shortName);
+                if ($fqcn && class_exists($fqcn) && is_subclass_of($fqcn, 'Illuminate\Database\Eloquent\Model')) {
+                    $candidates[] = $fqcn;
                 }
             }
             if (! empty($candidates)) {

@@ -2,11 +2,19 @@
 
 namespace SajjadHossain\Doctor\Checks\Mail;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Arg;
+use PhpParser\Node\Expr\Array_;
+use PhpParser\Node\Expr\ArrayItem;
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\New_;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class MailableMissingViewCheck implements HealthCheck
+class MailableMissingViewCheck extends PhpAstCheck
 {
     private array $scanPaths = [];
 
@@ -36,90 +44,85 @@ class MailableMissingViewCheck implements HealthCheck
         $locations = [];
         $paths = $this->scanPaths ?: [app_path('Mail')];
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        $viewMethods = ['view', 'text', 'markdown'];
+
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $viewNames = [];
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
+            $visitor = new class($viewMethods) extends NodeVisitorAbstract {
+                private array $methods;
+                public array $viewNames = [];
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+                public function __construct(array $methods) { $this->methods = $methods; }
 
-                $viewNames = [];
+                public function enterNode(Node $node): void
+                {
+                    // ->view('name'), ->text('name'), ->markdown('name')
+                    if ($node instanceof MethodCall
+                        && $node->name instanceof Node\Identifier
+                        && in_array($node->name->toString(), $this->methods, true)
+                        && count($node->args) > 0
+                        && $node->args[0]->value instanceof String_
+                    ) {
+                        $this->viewNames[] = $node->args[0]->value->value;
+                        return;
+                    }
 
-                // 1. ->view('name') — legacy and modern fluent API both
-                //    use this to render a Blade view.
-                if (preg_match_all('/->\s*view\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $vm)) {
-                    $viewNames = array_merge($viewNames, $vm[1]);
-                }
+                    // new Content(view: 'name', ...) or new Content(['view' => 'name'])
+                    if (!$node instanceof New_ || !$node->class instanceof Node\Name) {
+                        return;
+                    }
+                    $parts = explode('\\', $node->class->toString());
+                    $shortName = end($parts);
+                    if ($shortName !== 'Content') {
+                        return;
+                    }
 
-                // 2. ->text('name') — legacy fluent form for plain-text view.
-                if (preg_match_all('/->\s*text\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $tm)) {
-                    $viewNames = array_merge($viewNames, $tm[1]);
-                }
-
-                // 3. ->markdown('name') — legacy fluent form for markdown view.
-                if (preg_match_all('/->\s*markdown\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $stripped, $mm)) {
-                    $viewNames = array_merge($viewNames, $mm[1]);
-                }
-
-                // NOTE: ->html('...') is intentionally NOT treated as a view
-                // reference. Mailable::html() takes a raw HTML string and
-                // Laravel does NOT resolve it as a Blade view — see
-                // Illuminate/Mail/Mailable::html(). Treating raw HTML as
-                // a view name produced false positives like
-                // ->html('<h1>Hello</h1>') flagging `<h1>Hello</h1>` as a
-                // missing view.
-
-                // 4. Modern Content-object API. Supports BOTH:
-                //    a. Array-key form:  new Content(['view' => 'foo', ...])
-                //       or:               new Content(['html' => 'foo', ...])
-                //    b. Named-argument form: new Content(view: 'foo', ...)
-                //                          new Content(html: 'foo', ...)
-                //    The 'view', 'text', 'markdown' keys reference Blade
-                //    views; the 'html' key takes a raw HTML string and
-                //    must NOT be treated as a view.
-                if (preg_match_all('/new\s+Content\s*\(/', $stripped)) {
-                    foreach (['view', 'text', 'markdown'] as $k) {
-                        // Array-key form: 'k' => 'value'
-                        if (preg_match_all(
-                            '/[\'"]'.preg_quote($k, '/').'[\'"]\s*=>\s*[\'"]([^\'"]+)[\'"]/',
-                            $stripped,
-                            $cm
-                        )) {
-                            $viewNames = array_merge($viewNames, $cm[1]);
+                    foreach ($node->args as $arg) {
+                        if (!$arg instanceof Arg) {
+                            continue;
                         }
-                        // Named-argument form: k: 'value'
-                        if (preg_match_all(
-                            '/\b'.preg_quote($k, '/').'\s*:\s*[\'"]([^\'"]+)[\'"]/',
-                            $stripped,
-                            $cmn
-                        )) {
-                            $viewNames = array_merge($viewNames, $cmn[1]);
+
+                        // Named arg: new Content(view: 'name')
+                        if ($arg->name !== null
+                            && $arg->name instanceof Node\Identifier
+                            && in_array($arg->name->toString(), $this->methods, true)
+                            && $arg->value instanceof String_
+                        ) {
+                            $this->viewNames[] = $arg->value->value;
+                            continue;
+                        }
+
+                        // Array form: new Content(['view' => 'name'])
+                        if ($arg->name === null && $arg->value instanceof Array_) {
+                            foreach ($arg->value->items as $item) {
+                                if ($item instanceof ArrayItem
+                                    && $item->key instanceof String_
+                                    && in_array($item->key->value, $this->methods, true)
+                                    && $item->value instanceof String_
+                                ) {
+                                    $this->viewNames[] = $item->value->value;
+                                }
+                            }
                         }
                     }
-                    // 'html' is documented to accept raw HTML — we do NOT
-                    // collect its value as a view name even when it
-                    // syntactically looks like one (e.g. `html: '<p>Hi</p>'`).
                 }
+            };
 
-                foreach (array_unique($viewNames) as $viewName) {
-                    if (! view()->exists($viewName)) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'view' => $viewName,
-                            'issue' => "Mailable references view '{$viewName}' which does not exist",
-                        ];
-                    }
+            $this->traverse($stmts, $visitor);
+
+            foreach (array_unique($visitor->viewNames) as $viewName) {
+                if (! view()->exists($viewName)) {
+                    $locations[] = [
+                        'file' => $file['path'],
+                        'view' => $viewName,
+                        'issue' => "Mailable references view '{$viewName}' which does not exist",
+                    ];
                 }
             }
         }

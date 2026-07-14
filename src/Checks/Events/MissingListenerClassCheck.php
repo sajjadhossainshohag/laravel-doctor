@@ -2,12 +2,28 @@
 
 namespace SajjadHossain\Doctor\Checks\Events;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\Array_;
+use PhpParser\Node\Expr\ArrayItem;
+use PhpParser\Node\Expr\ClassConstFetch;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\Node\Stmt\Class_;
+use PhpParser\Node\Stmt\Property;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class MissingListenerClassCheck implements HealthCheck
+class MissingListenerClassCheck extends PhpAstCheck
 {
+    private array $scanPaths = [];
+
+    public function withPaths(array $paths): static
+    {
+        $this->scanPaths = $paths;
+        return $this;
+    }
+
     public function name(): string
     {
         return 'Missing Listener Class';
@@ -26,69 +42,128 @@ class MissingListenerClassCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $paths = [app_path('Providers')];
+        $paths = $this->scanPaths ?: [app_path('Providers')];
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($file['content']);
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $visitor = new class($file['content']) extends NodeVisitorAbstract {
+                private string $fileContent;
+                public array $listeners = [];
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
+                public function __construct(string $fileContent) { $this->fileContent = $fileContent; }
+
+                public function enterNode(Node $node): void
+                {
+                    $this->collectFromArray($node);
+                    $this->collectFromMethodCalls($node);
+                }
+
+                private function collectFromArray(Node $node): void
+                {
+                    // Find $listen property with array value
+                    if (!$node instanceof Property
+                        || !$node->props[0]->name instanceof Node\Identifier
+                        || $node->props[0]->name->toString() !== 'listen'
+                    ) {
+                        return;
+                    }
+
+                    $propValue = $node->props[0]->default;
+                    if (!$propValue instanceof Array_) {
+                        return;
+                    }
+
+                    foreach ($propValue->items as $item) {
+                        if ($item === null) {
+                            continue;
+                        }
+                        // Value could be: Single listener (ClassConstFetch or String_)
+                        // or array of listeners
+                        $this->extractListenerClasses($item->value, $item->getLine());
+                    }
+                }
+
+                private function collectFromMethodCalls(Node $node): void
+                {
+                    // Event::listen(FooListener::class, ...)
+                    if ($node instanceof Node\Expr\StaticCall
+                        && $node->class instanceof Node\Name
+                        && ($node->class->toString() === 'Event' || str_ends_with($node->class->toString(), '\\Event'))
+                        && $node->name instanceof Node\Identifier
+                        && $node->name->toString() === 'listen'
+                        && count($node->args) > 0
+                    ) {
+                        $this->findClassConstFetchInArgs($node->args, $node->getLine());
+                    }
+                }
+
+                private function findClassConstFetchInArgs(array $args, int $line): void
+                {
+                    foreach ($args as $arg) {
+                        if ($arg->value instanceof ClassConstFetch && $arg->value->class instanceof Node\Name) {
+                            $this->listeners[] = [
+                                'class' => $arg->value->class->toString(),
+                                'line' => $line,
+                            ];
+                        } elseif ($arg->value instanceof String_) {
+                            $this->listeners[] = [
+                                'class' => ltrim($arg->value->value, '\\'),
+                                'line' => $line,
+                            ];
+                        } elseif ($arg->value instanceof Array_) {
+                            foreach ($arg->value->items as $arrItem) {
+                                if ($arrItem !== null) {
+                                    $this->findClassConstFetchInArgs([$arrItem], $line);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                private function extractListenerClasses(Node $node, int $line): void
+                {
+                    if ($node instanceof ClassConstFetch && $node->class instanceof Node\Name) {
+                        $this->listeners[] = [
+                            'class' => $node->class->toString(),
+                            'line' => $line,
+                        ];
+                    } elseif ($node instanceof String_) {
+                        $this->listeners[] = [
+                            'class' => ltrim($node->value, '\\'),
+                            'line' => $line,
+                        ];
+                    } elseif ($node instanceof Array_) {
+                        foreach ($node->items as $item) {
+                            if ($item !== null) {
+                                $this->extractListenerClasses($item->value, $line);
+                            }
+                        }
+                    }
+                }
+            };
+
+            $this->traverse($stmts, $visitor);
+
+            foreach ($visitor->listeners as $listenerInfo) {
+                $className = $listenerInfo['class'];
+                $fqcn = $this->resolveFqcn($file['content'], $className);
+
+                if ($fqcn !== null && class_exists($fqcn)) {
+                    continue;
+                }
+                if (class_exists($className)) {
                     continue;
                 }
 
-                $content = file_get_contents($file->getRealPath());
-
-                // 1) Catch listener references inside $listen arrays:
-                //      protected $listen = [
-                //          FooEvent::class => [BarListener::class, ...],
-                //          \App\Events\X::class => 'FooListener',
-                //      ];
-                if (preg_match_all('/[\'"]([\\\\\w]+Listener[\w\\\\]*)[\'"]/', $content, $qListeners)) {
-                    foreach (array_unique($qListeners[1]) as $listener) {
-                        $fqcn = ltrim($listener, '\\');
-                        if (! class_exists($fqcn)) {
-                            $locations[] = [
-                                'file' => $file->getRealPath(),
-                                'issue' => "Listener class '{$fqcn}' does not exist",
-                            ];
-                        }
-                    }
-                }
-                if (preg_match_all('/([\w\\\\]+Listener[\w\\\\]*)::class/', $content, $cListeners)) {
-                    foreach (array_unique($cListeners[1]) as $listener) {
-                        $fqcn = ltrim($listener, '\\');
-                        if (! class_exists($fqcn)) {
-                            $locations[] = [
-                                'file' => $file->getRealPath(),
-                                'issue' => "Listener class '{$fqcn}' does not exist",
-                            ];
-                        }
-                    }
-                }
-
-                // 2) Catch bareword references to *Listener* identifiers
-                //    (e.g. `Event::listen(NewMessageListener::class, ...)`).
-                //    The original `\\b(\\w+Listener\\w*)\\b` was too broad
-                //    because it matched `FooListenerBar` in any context.
-                //    Restrict it to identifiers that are either followed
-                //    by `::class` or used as a string literal.
-                if (preg_match_all('/\b(\w+Listener)\b(?=\s*::class)/', $content, $classListeners)) {
-                    foreach (array_unique($classListeners[1]) as $listener) {
-                        $fqcn = $this->resolveClass($content, $listener);
-                        if ($fqcn && ! class_exists($fqcn)) {
-                            $locations[] = [
-                                'file' => $file->getRealPath(),
-                                'issue' => "Listener class '{$fqcn}' does not exist",
-                            ];
-                        }
-                    }
-                }
+                $locations[] = [
+                    'file' => $file['path'],
+                    'line' => $listenerInfo['line'],
+                    'issue' => "Listener class '{$className}' does not exist",
+                ];
             }
         }
 
@@ -111,38 +186,5 @@ class MissingListenerClassCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Create the missing listener class or remove the registration.',
         );
-    }
-
-    private function resolveClass(string $content, string $class): ?string
-    {
-        if (class_exists($class)) {
-            return $class;
-        }
-
-        // Look for a `use` import that imports this short class name.
-        if (preg_match_all('/^use\s+([\w\\\\]+)\s*;/m', $content, $uses)) {
-            foreach ($uses[1] as $fqcn) {
-                if ($this->shortName($fqcn) === ltrim($class, '\\')) {
-                    return ltrim($fqcn, '\\');
-                }
-            }
-        }
-
-        // Try same-namespace resolution.
-        if (preg_match('/^namespace\s+([\w\\\\]+);/m', $content, $ns)) {
-            $candidate = $ns[1] . '\\' . ltrim($class, '\\');
-            if (class_exists($candidate)) {
-                return $candidate;
-            }
-        }
-
-        return null;
-    }
-
-    private function shortName(string $fqcn): string
-    {
-        $parts = explode('\\', ltrim($fqcn, '\\'));
-
-        return end($parts);
     }
 }

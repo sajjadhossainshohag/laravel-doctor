@@ -53,7 +53,8 @@ class BusChainCheck extends PhpAstCheck
                     }
 
                     $className = $node->class->toString();
-                    $shortName = substr($className, strrpos($className, '\\') + 1);
+                    $parts = explode('\\', $className);
+                    $shortName = end($parts);
                     if ($shortName !== 'Bus') {
                         return;
                     }
