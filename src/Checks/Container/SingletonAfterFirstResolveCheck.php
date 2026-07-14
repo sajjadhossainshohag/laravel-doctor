@@ -239,15 +239,4 @@ class SingletonAfterFirstResolveCheck extends PhpAstCheck
         return $parts;
     }
 
-    private function isIgnored(string $path, array $patterns): bool
-    {
-        $normalized = str_replace('\\', '/', $path);
-        foreach ($patterns as $pattern) {
-            $normalizedPattern = str_replace('\\', '/', $pattern);
-            if (fnmatch($normalizedPattern, $normalized) || str_contains($normalized, $normalizedPattern)) {
-                return true;
-            }
-        }
-        return false;
-    }
 }

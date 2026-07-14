@@ -10,27 +10,43 @@ use SajjadHossain\Doctor\Contracts\HealthCheck;
 
 abstract class PhpAstCheck implements HealthCheck
 {
-    private ?Parser $parser = null;
+    private static ?Parser $sharedParser = null;
+    private static array $fileContentCache = [];
+    private static array $parsedAstCache = [];
+    private static array $strippedContentCache = [];
 
     protected function parser(): Parser
     {
-        return $this->parser ??= (new ParserFactory)->createForHostVersion();
+        return self::$sharedParser ??= (new ParserFactory)->createForHostVersion();
     }
 
     protected function stripComments(string $content): string
     {
-        $content = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
-        $content = preg_replace('#/\*.*?\*/#s', '', $content);
-        $content = preg_replace('!//[^\n]*!', '', $content);
+        $key = md5($content);
+        if (isset(self::$strippedContentCache[$key])) {
+            return self::$strippedContentCache[$key];
+        }
 
-        return $content;
+        $stripped = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
+        $stripped = preg_replace('#/\*.*?\*/#s', '', $stripped);
+        $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+
+        return self::$strippedContentCache[$key] = $stripped;
     }
 
     protected function parse(string $code): ?array
     {
+        $key = md5($code);
+        if (array_key_exists($key, self::$parsedAstCache)) {
+            return self::$parsedAstCache[$key];
+        }
+
         try {
-            return $this->parser()->parse($code);
+            $stmts = $this->parser()->parse($code);
+            self::$parsedAstCache[$key] = $stmts;
+            return $stmts;
         } catch (\PhpParser\Error) {
+            self::$parsedAstCache[$key] = null;
             return null;
         }
     }
@@ -46,6 +62,8 @@ abstract class PhpAstCheck implements HealthCheck
 
     protected function scanPhpFiles(array $paths): iterable
     {
+        $ignore = config("doctor.ignore.{$this->category()}", []);
+
         foreach ($paths as $path) {
             if (!is_dir($path)) {
                 continue;
@@ -61,11 +79,33 @@ abstract class PhpAstCheck implements HealthCheck
                 }
 
                 $realPath = $file->getRealPath();
-                $content = file_get_contents($realPath);
 
-                yield ['path' => $realPath, 'content' => $content];
+                if ($this->isIgnored($realPath, $ignore)) {
+                    continue;
+                }
+
+                $mtime = $file->getMTime();
+                $cacheKey = $realPath . '|' . $mtime;
+
+                if (!isset(self::$fileContentCache[$cacheKey])) {
+                    self::$fileContentCache[$cacheKey] = file_get_contents($realPath);
+                }
+
+                yield ['path' => $realPath, 'content' => self::$fileContentCache[$cacheKey]];
             }
         }
+    }
+
+    protected function isIgnored(string $path, array $patterns): bool
+    {
+        $normalized = str_replace('\\', '/', $path);
+        foreach ($patterns as $pattern) {
+            $normalizedPattern = str_replace('\\', '/', $pattern);
+            if (fnmatch($normalizedPattern, $normalized) || str_contains($normalized, $normalizedPattern)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     protected function resolveFqcn(string $fileContent, string $shortName): ?string

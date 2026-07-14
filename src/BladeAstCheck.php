@@ -4,10 +4,19 @@ namespace SajjadHossain\Doctor;
 
 abstract class BladeAstCheck extends PhpAstCheck
 {
+    private static array $compiledBladeCache = [];
+
     protected function compileBlade(string $rawBladeContent): string
     {
+        $key = md5($rawBladeContent);
+        if (isset(self::$compiledBladeCache[$key])) {
+            return self::$compiledBladeCache[$key];
+        }
+
         try {
-            return app('blade.compiler')->compileString($rawBladeContent);
+            $compiled = app('blade.compiler')->compileString($rawBladeContent);
+            self::$compiledBladeCache[$key] = $compiled;
+            return $compiled;
         } catch (\Throwable) {
             return '<?php // blade compilation failed';
         }

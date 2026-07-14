@@ -3,6 +3,7 @@
 namespace SajjadHossain\Doctor\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use SajjadHossain\Doctor\CheckRegistry;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Output\ConsoleRenderer;
@@ -41,6 +42,8 @@ class ScanCommand extends Command
         }
 
         $total = count($instances);
+        $noCache = $this->option('no-cache');
+
         $this->newLine();
         $this->line("  <fg=cyan>Running {$total} checks...</>");
         $this->newLine();
@@ -48,19 +51,58 @@ class ScanCommand extends Command
         $results = [];
         $overallStart = microtime(true);
 
-        foreach ($instances as $i => $check) {
-            $name = $check->name();
-            $this->output->write("  <fg=gray>[{$this->pad($i + 1, $total)}/{$total}]</> {$name}... ");
+        $grouped = [];
+        foreach ($instances as $check) {
+            $grouped[$check->category()][] = $check;
+        }
 
-            $checkStart = microtime(true);
-            $result = $check->run();
-            $checkDuration = (microtime(true) - $checkStart) * 1000;
-            $results[] = $result;
+        $cacheStore = config('doctor.cache.store', 'file');
+        $cacheTtl = config('doctor.cache.ttl', 3600);
+        $checkIndex = 0;
 
-            $icon = $result->passed ? '✓' : '✗';
-            $color = $result->passed ? 'green' : ($result->severity === Severity::Error ? 'red' : 'yellow');
-            $ms = number_format($checkDuration, 0);
-            $this->output->writeln("<fg={$color}>{$icon}</> <fg=gray>{$ms}ms</>");
+        foreach ($grouped as $category => $categoryChecks) {
+            $cachedResults = null;
+
+            if (!$noCache) {
+                $cachedResults = Cache::store($cacheStore)->get("doctor_scan_{$category}");
+            }
+
+            if ($cachedResults !== null) {
+                foreach ($cachedResults as $result) {
+                    $checkIndex++;
+                    $results[] = $result;
+                    $this->output->write("  <fg=gray>[{$this->pad($checkIndex, $total)}/{$total}]</> {$result->check}... ");
+                    $icon = $result->passed ? '✓' : '✗';
+                    $color = $result->passed ? 'green' : ($result->severity === Severity::Error ? 'red' : 'yellow');
+                    $this->output->writeln("<fg={$color}>{$icon}</> <fg=gray>cached</>");
+                }
+
+                continue;
+            }
+
+            $freshResults = [];
+
+            foreach ($categoryChecks as $check) {
+                $checkIndex++;
+                $name = $check->name();
+                $this->output->write("  <fg=gray>[{$this->pad($checkIndex, $total)}/{$total}]</> {$name}... ");
+
+                $checkStart = microtime(true);
+                $result = $check->run();
+                $checkDuration = (microtime(true) - $checkStart) * 1000;
+                $freshResults[] = $result;
+
+                $icon = $result->passed ? '✓' : '✗';
+                $color = $result->passed ? 'green' : ($result->severity === Severity::Error ? 'red' : 'yellow');
+                $ms = number_format($checkDuration, 0);
+                $this->output->writeln("<fg={$color}>{$icon}</> <fg=gray>{$ms}ms</>");
+            }
+
+            if (!$noCache) {
+                Cache::store($cacheStore)->put("doctor_scan_{$category}", $freshResults, $cacheTtl);
+            }
+
+            $results = array_merge($results, $freshResults);
         }
 
         $this->newLine();
