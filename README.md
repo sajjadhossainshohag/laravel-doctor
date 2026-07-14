@@ -4,7 +4,7 @@
 
 > **Beta** — under active development. Things may change.
 
-Run a single artisan command to scan your entire Laravel codebase for 54+ common issues, grouped by category with severity levels.
+Run a single artisan command to scan your entire Laravel codebase for 50+ common issues, grouped by category with severity levels.
 
 ---
 
@@ -83,32 +83,24 @@ php artisan doctor:cache:clear
 
 ### Components
 - **ComponentClassCheck** — Blade component alias references a class that doesn't exist
-- **ComponentViewCheck** — component's `render()` returns a view that doesn't exist
 - **ComponentNamespaceCheck** — view namespace maps to a non-existent directory
 - **AnonymousComponentCheck** — anonymous component namespace maps to a non-existent directory
 
 ### Eloquent / Models
 - **WithCountOnUndefinedRelationshipCheck** — `->withCount('rel')` where the relationship method doesn't exist
-- **WrongRelationshipKeyConventionCheck** — relationship uses non-conventional foreign keys
 - **ValueVsFirstOnNullCheck** — `->first()->property` without a null guard (crashes on empty result)
-- **SoftDeleteScopeConflictCheck** — direct `where('deleted_at', ...)` queries conflicting with `SoftDeletes`
 - **MissingGuardedOrFillableCheck** — model has neither `$fillable` nor `$guarded` (mass-assignment unprotected)
 - **AccessorMutatorStyleConflictCheck** — model mixes old-style accessors with new `Attribute::make()` pattern
 
 ### Schema / Database
 - **ColumnMismatchCheck** — `$fillable` or `$casts` columns don't exist in the actual database table
-- **ForeignKeyCheck** — foreign key references a table or column that doesn't exist
 - **InvalidCastsCheck** — model `$casts` references invalid cast types or classes
 
 ### Cache
-- **CacheDriverNotRunningCheck** — cache driver is `redis` or `memcached` but the service is unreachable
 - **SessionDriverMismatchCheck** — session driver is `database` but the sessions table doesn't exist
-- **CacheTagsOnUnsupportedDriverCheck** — `Cache::tags()` used with a driver that doesn't support tags
-- **RememberReturnsClosureCheck** — `Cache::remember()` callback returns a `Closure` (can't be serialized)
 
 ### Config
 - **EarlyConfigAccessCheck** — `config()` called inside a service provider's `register()` method
-- **ConfigCacheIncompatibleValuesCheck** — config file contains a Closure (breaks `config:cache`)
 - **AbortIfWrongHttpCodeCheck** — `abort_if()` / `abort_unless()` called with a code below 400
 
 ### Env
@@ -122,22 +114,18 @@ php artisan doctor:cache:clear
 - **JobHasHandleMethodCheck** — `ShouldQueue` class has no `handle()` method
 - **JobDependencyResolutionCheck** — job constructor has unresolvable type-hinted parameter
 - **JobTriesZeroCheck** — job has `public $tries = 0` (never retries)
-- **QueueDriverCheck** — queue driver is `sync` in production
 - **FailedJobTableMissingCheck** — `failed_jobs` table doesn't exist
 
 ### Events
 - **MissingListenerClassCheck** — event listener class doesn't exist
 - **ListenerMissingHandleMethodCheck** — listener has no `handle()` method
-- **UnserializableListenerPayloadCheck** — queued event contains a `Closure` (can't be serialized)
 
 ### Middleware
 - **UnregisteredMiddlewareCheck** — `->middleware('alias')` used but alias not registered
 - **TerminateMethodThrowsCheck** — `terminate()` makes external calls without try/catch
-- **UserBeforeAuthCheck** — `$request->user()` called before auth middleware runs
 
 ### Validation
 - **NonExistentRuleClassCheck** — custom rule class instantiated but doesn't exist
-- **DeprecatedErrorApiCheck** — `$this->error()` used (Laravel 10 deprecated API)
 - **AuthorizeAlwaysFalseCheck** — FormRequest `authorize()` hardcoded to `return false`
 
 ### Storage
@@ -160,8 +148,6 @@ php artisan doctor:cache:clear
 
 ### Livewire
 - **MissingLivewireComponentCheck** — `<livewire:name>` used but component class doesn't exist
-- **MissingLivewireActionMethodCheck** — `wire:click="method"` but method doesn't exist on component
-- **WireModelMissingPropertyCheck** — `wire:model="prop"` but property doesn't exist on component
 
 ### Mail
 - **MailableMissingViewCheck** — mailable's `->view('name')` references a view that doesn't exist
