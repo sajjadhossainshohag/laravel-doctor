@@ -40,6 +40,8 @@ php artisan doctor:scan
 | `--html` | Output as HTML |
 | `--fail-on=error,warning` | Exit code 1 if issues at these severities exist |
 | `--no-cache` | Skip cached results |
+| `--parallel` | Distribute checks across parallel subprocesses |
+| `--workers=N` | Number of parallel workers (auto-detected from CPU by default) |
 | `--verbose` | More detailed console output |
 | `--help` | Display help |
 
@@ -60,6 +62,12 @@ php artisan doctor:scan --json
 
 # Skip cached results (force re-scan)
 php artisan doctor:scan --no-cache
+
+# Run checks in parallel (4 workers by default)
+php artisan doctor:scan --parallel
+
+# Run checks in parallel with custom worker count
+php artisan doctor:scan --parallel --workers=8
 ```
 
 ### Cache

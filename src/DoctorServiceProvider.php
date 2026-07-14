@@ -52,6 +52,7 @@ use SajjadHossain\Doctor\Checks\Views\MissingIncludeCheck;
 use SajjadHossain\Doctor\Checks\Views\StackPushMismatchCheck;
 use SajjadHossain\Doctor\Commands\CacheClearCommand;
 use SajjadHossain\Doctor\Commands\ScanCommand;
+use SajjadHossain\Doctor\Commands\WorkerCommand;
 
 class DoctorServiceProvider extends ServiceProvider
 {
@@ -159,6 +160,7 @@ class DoctorServiceProvider extends ServiceProvider
             $this->commands([
                 ScanCommand::class,
                 CacheClearCommand::class,
+                WorkerCommand::class,
             ]);
         }
     }

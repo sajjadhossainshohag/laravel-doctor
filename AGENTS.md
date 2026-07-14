@@ -19,7 +19,11 @@
 | `php artisan doctor:scan --json` | JSON output |
 | `php artisan doctor:scan --fail-on=error,warning` | Exit 1 if issues found |
 | `php artisan doctor:scan --no-cache` | Skip cached results |
+| `php artisan doctor:scan --parallel` | Run checks in parallel subprocesses |
+| `php artisan doctor:scan --parallel --workers=8` | Parallel with custom worker count |
+| `php artisan doctor:cache:clear` | Clear cached scan results |
 | `php artisan vendor:publish --tag=doctor-config` | Publish config to Laravel project |
+| `php artisan doctor:worker --only=... --output=...` | (Internal) Run a subset of checks for parallel workers |
 
 No linter, formatter, or static analysis tooling is configured.
 
@@ -30,7 +34,11 @@ No linter, formatter, or static analysis tooling is configured.
 - **Severity enum** (`src/Enums/Severity.php`): `Error`, `Warning`, `Info` (backed: `'error'`, `'warning'`, `'info'`).
 - **Registry pattern:** `CheckRegistry` holds class strings, registered in `DoctorServiceProvider::boot()`. All 50+ checks registered there.
 - **AST analysis:** `PhpAstCheck` wraps `nikic/php-parser ^5.0` — provides `parse()`, `traverse()`, `scanPhpFiles()`, `resolveFqcn()`. `BladeAstCheck` extends it — compiles Blade → PHP, then parses.
-- **Entrypoints:** `DoctorServiceProvider`, `ScanCommand`, `CacheClearCommand`. Facade alias: `Doctor`.
+- **In-memory caches** (static, per-process): `PhpAstCheck` shares a single `Parser` instance and caches file contents (bounded to 1000 entries). `BladeAstCheck` caches compiled Blade output.
+- **Ignore patterns:** `scanPhpFiles()` applies `config('doctor.ignore.{category}')` centrally — all checks skip vendor/noisy files automatically.
+- **Persistent result cache:** `ScanResultCache` backed by Laravel Cache. Categories cached independently, invalidation via `--no-cache` or `doctor:cache:clear`.
+- **Parallel execution:** `ParallelRunner` spawns subprocesses via `proc_open` — each runs `doctor:worker --only=... --output=...` with category groups. Results serialized to temp files, merged in the parent process. Fallback to sequential on worker failure.
+- **Entrypoints:** `DoctorServiceProvider`, `ScanCommand`, `CacheClearCommand`, `WorkerCommand` (internal). Facade alias: `Doctor`.
 
 ## Namespace map
 

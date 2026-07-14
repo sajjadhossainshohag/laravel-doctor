@@ -20,7 +20,13 @@ Common options:
 ```
 php artisan doctor:scan --only=routes,views              # Run specific categories only
 php artisan doctor:scan --fail-on=error                  # Exit code 1 on errors
+php artisan doctor:scan --no-cache                       # Force re-scan, skip cached results
+php artisan doctor:scan --parallel                       # Run checks in parallel subprocesses
+php artisan doctor:scan --parallel --workers=8           # Parallel with custom worker count
+php artisan doctor:scan --json                           # Machine-readable JSON output
+php artisan doctor:scan --html                           # HTML report
 php artisan doctor:scan -v                               # Show all issues (not just first 5 per check)
+php artisan doctor:cache:clear                           # Clear cached scan results
 ```
 
 ### Parsing results programmatically
