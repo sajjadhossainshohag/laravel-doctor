@@ -57,6 +57,9 @@ php artisan doctor:scan --fail-on=error,warning
 
 # JSON output for tooling
 php artisan doctor:scan --json
+
+# Skip cached results (force re-scan)
+php artisan doctor:scan --no-cache
 ```
 
 ### Cache
