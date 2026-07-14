@@ -1,31 +1,60 @@
-# Repository Guidelines
+# Laravel Doctor — AGENTS.md
 
-## Project Structure & Module Organization
+## Identity
 
-This is a Laravel package for code health checks. Package source lives in `src/` under the `SajjadHossain\Doctor\` PSR-4 namespace. Tests live in `tests/Unit` and `tests/Feature` under `SajjadHossain\Doctor\Tests\`. Configuration, route, and database integration files are organized in `config/`, `routes/`, and `database/`. CI configuration is in `.github/`. Vendor dependencies are installed in `vendor/` and should not be edited directly.
+- **Composer library** (`sajjadhossainshohag/laravel-doctor`), not a standalone app.
+- Static analysis tool for Laravel codebases. Scans PHP/Blade source for 50+ issues across 18 categories.
+- PHP ^8.2, supports Laravel ^11.0|^12.0|^13.0.
 
-## Build, Test, and Development Commands
+## Commands
 
-- `composer install`: install PHP dependencies.
-- `composer dump-autoload`: refresh Composer autoload mappings after adding classes.
-- `vendor/bin/phpunit`: run the full test suite using `phpunit.xml`.
-- `vendor/bin/phpunit --testsuite Unit`: run unit tests only.
-- `vendor/bin/phpunit --testsuite Feature`: run feature tests only.
+| Command | Purpose |
+|---|---|
+| `vendor/bin/phpunit` | Run all tests (no composer script defined) |
+| `vendor/bin/phpunit --testsuite=Unit` | Unit tests only |
+| `vendor/bin/phpunit --testsuite=Feature` | Feature tests only |
+| `vendor/bin/phpunit --filter="test_method_name"` | Single test |
+| `php artisan doctor:scan` | Run health scan in a Laravel project |
+| `php artisan doctor:scan --only=routes,views` | Filter by category |
+| `php artisan doctor:scan --json` | JSON output |
+| `php artisan doctor:scan --fail-on=error,warning` | Exit 1 if issues found |
+| `php artisan doctor:scan --no-cache` | Skip cached results |
+| `php artisan vendor:publish --tag=doctor-config` | Publish config to Laravel project |
 
-There is no frontend build pipeline in this package. Keep development focused on PHP package code and Laravel integration behavior.
+No linter, formatter, or static analysis tooling is configured.
 
-## Coding Style & Naming Conventions
+## Architecture
 
-Use PHP 8.2+ features only when compatible with the supported Laravel versions. Follow PSR-4 class placement: a class such as `SajjadHossain\Doctor\Services\RouteScanner` belongs in `src/Services/RouteScanner.php`. Use 4-space indentation for PHP and XML files. Prefer descriptive class and method names that match their Laravel role, such as `DoctorServiceProvider`, console command classes, scanners, analyzers, and result DTOs. Keep public APIs small and avoid framework side effects during package boot unless required.
+- **Contract:** `SajjadHossain\Doctor\Contracts\HealthCheck` — `name()`, `category()`, `severity()`, `run(): CheckResult`.
+- **CheckResult DTO** (`src/DTOs/CheckResult.php`): readonly properties — `check`, `category`, `severity`, `passed`, `message`, `locations`, `suggestion`.
+- **Severity enum** (`src/Enums/Severity.php`): `Error`, `Warning`, `Info` (backed: `'error'`, `'warning'`, `'info'`).
+- **Registry pattern:** `CheckRegistry` holds class strings, registered in `DoctorServiceProvider::boot()`. All 50+ checks registered there.
+- **AST analysis:** `PhpAstCheck` wraps `nikic/php-parser ^5.0` — provides `parse()`, `traverse()`, `scanPhpFiles()`, `resolveFqcn()`. `BladeAstCheck` extends it — compiles Blade → PHP, then parses.
+- **Entrypoints:** `DoctorServiceProvider`, `ScanCommand`, `CacheClearCommand`. Facade alias: `Doctor`.
 
-## Testing Guidelines
+## Namespace map
 
-PHPUnit is configured through `phpunit.xml` with in-memory SQLite, array cache, sync queue, and testing environment variables. Place isolated behavior tests in `tests/Unit` and Laravel integration tests in `tests/Feature`. Name tests after the behavior under test, for example `RouteScannerTest.php` or `DoctorCommandTest.php`. Add or update tests for route checks, view resolution, schema checks, and service provider behavior when those areas change.
+| Namespace | Path |
+|---|---|
+| `SajjadHossain\Doctor\` | `src/` |
+| `SajjadHossain\Doctor\Tests\` | `tests/` |
 
-## Commit & Pull Request Guidelines
+Check implementations live under `src/Checks/{Category}/`.
 
-Recent commits use short, imperative summaries such as `Refactor CI dependency installation for improved security and compatibility`. Keep commit subjects concise and focused on the change. Pull requests should include a clear description, affected package areas, test results, and linked issues when applicable. Include screenshots or console output only when command behavior or developer-facing output changes.
+## Testing
 
-## Security & Configuration Tips
+- Uses `orchestra/testbench` (^9.0|^10.0|^11.0). Base: `tests/TestCase.php` extends `Orchestra\Testbench\TestCase`.
+- Test helpers: `assertCheckFailed(CheckResult $result, Severity $severity, ?string $messageContains = null)` and `assertCheckPassed(CheckResult $result)`.
+- **31 Unit** tests (isolated check logic), **18 Feature** tests (full Laravel boot, command integration).
+- Fixtures in `tests/Fixtures/` mirror a real Laravel app (Models, Jobs, Mail, routes, views, etc.).
+- phpunit.xml sets `APP_ENV=testing`, `DB_CONNECTION=sqlite` (`:memory:`), `CACHE_DRIVER=array`, `SESSION_DRIVER=array`, `QUEUE_CONNECTION=sync`.
 
-Do not commit local secrets, `.env` files, or generated caches. Keep package defaults safe for test and CI environments. When adding configuration, document expected keys and avoid requiring application-specific credentials for basic health checks.
+## CI
+
+`.github/workflows/ci.yml` — matrix: PHP 8.2/8.3/8.4 × Laravel 11/12/13 × prefer-lowest/prefer-stable. Excludes PHP 8.2 + Laravel 13. Coverage disabled.
+
+## Conventions
+
+- PHP 8.2+ features used throughout: readonly properties, enums, named arguments, typed class constants.
+- Checks are stateless — instantiated fresh per scan run. No constructor injection; use fluent setters for test seams (e.g. `withPaths()`, `withEnvFile()`).
+- `composer.lock` is gitignored. CI regenerates it each run.
