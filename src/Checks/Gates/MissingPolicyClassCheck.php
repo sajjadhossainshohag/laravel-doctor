@@ -2,11 +2,15 @@
 
 namespace SajjadHossain\Doctor\Checks\Gates;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\ClassConstFetch;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class MissingPolicyClassCheck implements HealthCheck
+class MissingPolicyClassCheck extends PhpAstCheck
 {
     private array $scanPaths = [];
 
@@ -36,69 +40,64 @@ class MissingPolicyClassCheck implements HealthCheck
         $locations = [];
         $paths = $this->scanPaths ?: [app_path('Providers')];
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $visitor = new class extends NodeVisitorAbstract {
+                public array $policies = [];
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
+                public function enterNode(Node $node): void
+                {
+                    if (!$node instanceof StaticCall) {
+                        return;
+                    }
+                    if (!$node->class instanceof Node\Name || $node->class->toString() !== 'Gate') {
+                        return;
+                    }
+                    if (!$node->name instanceof Node\Identifier || $node->name->toString() !== 'policy') {
+                        return;
+                    }
+                    if (count($node->args) < 2) {
+                        return;
+                    }
+
+                    $arg0 = $node->args[0]->value;
+                    $arg1 = $node->args[1]->value;
+
+                    if ($arg0 instanceof ClassConstFetch && $arg1 instanceof ClassConstFetch) {
+                        $this->policies[] = [
+                            'line' => $node->getLine(),
+                            'policy' => $arg1->class->toString(),
+                        ];
+                    }
+                }
+            };
+
+            $this->traverse($stmts, $visitor);
+
+            foreach ($visitor->policies as $policyInfo) {
+                $policyClass = $policyInfo['policy'];
+                $resolved = $this->resolveFqcn($file['content'], $policyClass);
+
+                if ($resolved !== null && class_exists($resolved)) {
                     continue;
                 }
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
-
-                preg_match('/^\s*namespace\s+([\w\\\\]+);/m', $stripped, $nsM);
-                $namespace = $nsM[1] ?? '';
-
-                preg_match_all(
-                    '/Gate::policy\s*\(\s*([\w\\\\]+)::class\s*,\s*([\w\\\\]+)::class\s*\)/',
-                    $stripped,
-                    $matches,
-                    PREG_SET_ORDER
-                );
-
-                foreach ($matches as $m) {
-                    $policyClass = $m[2];
-
-                    // Try direct FQCN first.
-                    if (class_exists($policyClass)) {
+                if (!str_contains($policyClass, '\\')) {
+                    $prefixed = 'App\\Policies\\' . $policyClass;
+                    if (class_exists($prefixed)) {
                         continue;
                     }
-
-                    // Try resolving against `use` imports in the file.
-                    $resolved = $this->resolveClassName($stripped, $policyClass);
-                    if ($resolved !== null && class_exists($resolved)) {
-                        continue;
-                    }
-
-                    // Also try same-namespace resolution.
-                    if ($namespace !== '' && ! str_contains($policyClass, '\\')) {
-                        $candidate = $namespace.'\\'.$policyClass;
-                        if (class_exists($candidate)) {
-                            continue;
-                        }
-                    }
-
-                    // Conventional App\Policies\ fallback.
-                    if (! str_contains($policyClass, '\\')) {
-                        $prefixed = 'App\\Policies\\'.$policyClass;
-                        if (class_exists($prefixed)) {
-                            continue;
-                        }
-                    }
-
-                    $locations[] = [
-                        'file' => $file->getRealPath(),
-                        'issue' => "Policy class '{$policyClass}' does not exist",
-                    ];
                 }
+
+                $locations[] = [
+                    'file' => $file['path'],
+                    'line' => $policyInfo['line'],
+                    'issue' => "Policy class '{$policyClass}' does not exist",
+                ];
             }
         }
 
@@ -121,28 +120,5 @@ class MissingPolicyClassCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Create the missing policy class or remove the Gate::policy() registration.',
         );
-    }
-
-    /**
-     * Resolve a possibly-short class name against `use` imports in the file.
-     */
-    private function resolveClassName(string $content, string $class): ?string
-    {
-        $class = ltrim($class, '\\');
-        if (class_exists($class)) {
-            return $class;
-        }
-
-        if (preg_match_all('/^\s*use\s+([\w\\\\]+)(?:\s+as\s+\w+)?\s*;/m', $content, $uses)) {
-            foreach ($uses[1] as $fqcn) {
-                $parts = explode('\\', ltrim($fqcn, '\\'));
-                $short = end($parts);
-                if ($short === $class) {
-                    return ltrim($fqcn, '\\');
-                }
-            }
-        }
-
-        return null;
     }
 }

@@ -2,11 +2,17 @@
 
 namespace SajjadHossain\Doctor\Checks\Container;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\ClassConstFetch;
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\PropertyFetch;
+use PhpParser\Node\Expr\Variable;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class InterfaceBoundToDeletedConcreteCheck implements HealthCheck
+class InterfaceBoundToDeletedConcreteCheck extends PhpAstCheck
 {
     private array $scanPaths = [];
 
@@ -36,43 +42,65 @@ class InterfaceBoundToDeletedConcreteCheck implements HealthCheck
         $locations = [];
         $paths = $this->scanPaths ?: [app_path('Providers')];
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $visitor = new class extends NodeVisitorAbstract {
+                public array $bindings = [];
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
-
-                $content = file_get_contents($file->getRealPath());
-
-                // Strip line/block comments so we don't flag commented bindings.
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
-
-                // Capture both the abstract (interface) and concrete. Note the
-                // concrete may be a closure, a string, an instance, or
-                // `SomeClass::class` — we only care about the ::class form.
-                if (preg_match_all(
-                    '/\$this->app->bind\s*\(\s*([\w\\\\]+)::class\s*,\s*([\w\\\\]+)::class\s*\)/',
-                    $stripped,
-                    $m
-                )) {
-                    foreach ($m[2] as $i => $concrete) {
-                        $resolved = $this->resolveClassName($stripped, $concrete);
-                        if ($resolved !== null && ! class_exists($resolved)) {
-                            $locations[] = [
-                                'file' => $file->getRealPath(),
-                                'issue' => "Binding references non-existent class '{$resolved}' (was '{$concrete}')",
-                            ];
-                        }
+                public function enterNode(Node $node): void
+                {
+                    // $this->app->bind(Interface::class, Concrete::class)
+                    if (!$node instanceof MethodCall || !$node->name instanceof Node\Identifier) {
+                        return;
                     }
+                    if ($node->name->toString() !== 'bind') {
+                        return;
+                    }
+                    // Must be $this->app->bind(...) where $this->app is a PropertyFetch
+                    if (!$node->var instanceof PropertyFetch) {
+                        return;
+                    }
+                    $prop = $node->var;
+                    if (!$prop->var instanceof Variable || $prop->var->name !== 'this') {
+                        return;
+                    }
+                    if (!$prop->name instanceof Node\Identifier || $prop->name->toString() !== 'app') {
+                        return;
+                    }
+
+                    if (count($node->args) < 2) {
+                        return;
+                    }
+
+                    $arg0 = $node->args[0]->value;
+                    $arg1 = $node->args[1]->value;
+
+                    if ($arg0 instanceof ClassConstFetch && $arg1 instanceof ClassConstFetch) {
+                        $abstract = $arg0->class->toString();
+                        $concrete = $arg1->class->toString();
+                        $this->bindings[] = [
+                            'line' => $node->getLine(),
+                            'concrete' => $concrete,
+                            'abstract' => $abstract,
+                        ];
+                    }
+                }
+            };
+
+            $this->traverse($stmts, $visitor);
+
+            foreach ($visitor->bindings as $binding) {
+                $resolved = $this->resolveFqcn($file['content'], $binding['concrete']);
+                if ($resolved !== null && ! class_exists($resolved)) {
+                    $locations[] = [
+                        'file' => $file['path'],
+                        'line' => $binding['line'],
+                        'issue' => "Binding references non-existent class '{$resolved}'",
+                    ];
                 }
             }
         }
@@ -96,43 +124,5 @@ class InterfaceBoundToDeletedConcreteCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Fix the binding to reference an existing class, or remove the binding.',
         );
-    }
-
-    /**
-     * Resolve a class name (which may be a short alias imported via `use`) to
-     * its fully-qualified form. Returns the FQCN, or the original value if
-     * it already looked like a FQCN. Returns null if it cannot be resolved.
-     */
-    private function resolveClassName(string $content, string $class): ?string
-    {
-        $class = ltrim($class, '\\');
-
-        // If it's already a real FQCN, use as-is.
-        if (class_exists($class)) {
-            return $class;
-        }
-
-        // Resolve via `use` imports in the file. We must also handle aliases
-        // (use Foo\Bar as Baz) — the alias's short name is 'Baz', not 'Bar'.
-        if (preg_match_all('/^\s*use\s+([\w\\\\]+)(?:\s+as\s+(\w+))?\s*;/m', $content, $uses, PREG_SET_ORDER)) {
-            foreach ($uses as $useMatch) {
-                $fqcn = ltrim($useMatch[1], '\\');
-                $alias = $useMatch[2] ?? null;
-                $shortFromFqcn = basename(str_replace('\\', '/', $fqcn));
-                $shortNames = $alias ? [$alias, $shortFromFqcn] : [$shortFromFqcn];
-                if (in_array($class, $shortNames, true)) {
-                    return $fqcn;
-                }
-            }
-        }
-
-        // Try same-namespace resolution.
-        if (preg_match('/^\s*namespace\s+([\w\\\\]+);/m', $content, $ns)) {
-            $candidate = $ns[1] . '\\' . $class;
-            return $candidate;
-        }
-
-        // Last resort: return the short name; class_exists will be called on it.
-        return $class;
     }
 }

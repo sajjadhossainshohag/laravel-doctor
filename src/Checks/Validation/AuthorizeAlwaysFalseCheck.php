@@ -2,12 +2,24 @@
 
 namespace SajjadHossain\Doctor\Checks\Validation;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Stmt\ClassMethod;
+use PhpParser\Node\Stmt\Return_;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class AuthorizeAlwaysFalseCheck implements HealthCheck
+class AuthorizeAlwaysFalseCheck extends PhpAstCheck
 {
+    private array $scanPaths = [];
+
+    public function withPaths(array $paths): static
+    {
+        $this->scanPaths = $paths;
+        return $this;
+    }
+
     public function name(): string
     {
         return 'authorize() Always Returns False';
@@ -26,37 +38,37 @@ class AuthorizeAlwaysFalseCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $paths = [app_path('Http/Requests')];
+        $paths = $this->scanPaths ?: [app_path('Http/Requests')];
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
-
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
+            $visitor = new class extends NodeVisitorAbstract {
+                public array $found = [];
+                public function enterNode(Node $node): void {
+                    if (!$node instanceof ClassMethod || $node->name->toString() !== 'authorize') {
+                        return;
+                    }
+                    if ($node->stmts !== null && count($node->stmts) === 1 && $node->stmts[0] instanceof Return_) {
+                        $retVal = $node->stmts[0]->expr;
+                        if ($retVal instanceof Node\Expr\ConstFetch && $retVal->name->toString() === 'false') {
+                            $this->found[] = $node->getLine();
+                        }
+                    }
                 }
+            };
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+            $this->traverse($stmts, $visitor);
 
-                // authorize() { return false; } is documented and is a
-                // legitimate, intentional pattern when the developer
-                // wants to forbid all access in a FormRequest. The
-                // previous version of this check flagged it as a hard
-                // error. We surface it as informational instead.
-                if (preg_match('/function\s+authorize\s*\([^)]*\)\s*\{\s*return\s+false\s*;\s*\}/', $stripped)) {
-                    $locations[] = [
-                        'file' => $file->getRealPath(),
-                        'issue' => 'authorize() returns false — every request gets 403. Verify this is intentional.',
-                    ];
-                }
+            foreach ($visitor->found as $line) {
+                $locations[] = [
+                    'file' => $file['path'],
+                    'line' => $line,
+                    'issue' => 'authorize() returns false — every request gets 403. Verify this is intentional.',
+                ];
             }
         }
 

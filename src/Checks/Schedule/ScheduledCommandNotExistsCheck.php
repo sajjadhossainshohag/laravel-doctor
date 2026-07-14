@@ -2,12 +2,25 @@
 
 namespace SajjadHossain\Doctor\Checks\Schedule;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\ClassConstFetch;
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class ScheduledCommandNotExistsCheck implements HealthCheck
+class ScheduledCommandNotExistsCheck extends PhpAstCheck
 {
+    private array $scanPaths = [];
+
+    public function withPaths(array $paths): static
+    {
+        $this->scanPaths = $paths;
+        return $this;
+    }
+
     public function name(): string
     {
         return 'Scheduled Command Class Does Not Exist';
@@ -26,19 +39,39 @@ class ScheduledCommandNotExistsCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $filesToScan = $this->collectScheduleFiles();
 
-        foreach ($filesToScan as $filePath) {
-            $content = file_get_contents($filePath);
-            // Match both $schedule->command(Foo::class) and
-            // Schedule::command(Foo::class). Use preg_match_all so we
-            // catch every reference in the file, not just the first.
-            if (preg_match_all('/(?:\$schedule|Schedule::)->command\s*\(\s*([\w\\\\]+)::class/', $content, $matches)) {
-                foreach ($matches[1] as $commandClass) {
-                    if (! class_exists($commandClass)) {
+        $paths = $this->scanPaths ?: [app_path('Console'), app_path('Providers')];
+        $consoleRoute = base_path('routes/console.php');
+
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($file['content']);
+            if ($stmts === null) {
+                continue;
+            }
+
+            foreach ($this->extractCommandClasses($stmts, $file['content']) as $cmdInfo) {
+                $checkClass = $cmdInfo['class'];
+                if (!class_exists($checkClass)) {
+                    $locations[] = [
+                        'file' => $file['path'],
+                        'line' => $cmdInfo['line'],
+                        'issue' => "Scheduled command class '{$checkClass}' does not exist",
+                    ];
+                }
+            }
+        }
+
+        if (is_file($consoleRoute)) {
+            $content = file_get_contents($consoleRoute);
+            $stmts = $this->parse($content);
+            if ($stmts !== null) {
+                foreach ($this->extractCommandClasses($stmts, $content) as $cmdInfo) {
+                    $checkClass = $cmdInfo['class'];
+                    if (!class_exists($checkClass)) {
                         $locations[] = [
-                            'file' => $filePath,
-                            'issue' => "Scheduled command class '{$commandClass}' does not exist",
+                            'file' => $consoleRoute,
+                            'line' => $cmdInfo['line'],
+                            'issue' => "Scheduled command class '{$checkClass}' does not exist",
                         ];
                     }
                 }
@@ -66,33 +99,53 @@ class ScheduledCommandNotExistsCheck implements HealthCheck
         );
     }
 
-    /**
-     * Collect PHP files that may contain schedule definitions: app/Console,
-     * app/Providers (boot() method), and routes/console.php.
-     *
-     * @return list<string>
-     */
-    private function collectScheduleFiles(): array
+    private function extractCommandClasses(array $stmts, string $fileContent): array
     {
-        $files = [];
-        foreach ([app_path('Console'), app_path('Providers')] as $path) {
-            if (! is_dir($path)) {
-                continue;
-            }
-            $iter = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
-            foreach ($iter as $file) {
-                if ($file->getExtension() === 'php') {
-                    $files[] = $file->getRealPath();
+        $visitor = new class extends NodeVisitorAbstract {
+            public array $commands = [];
+
+            public function enterNode(Node $node): void
+            {
+                $classArg = null;
+
+                if ($node instanceof StaticCall
+                    && $node->class instanceof Node\Name
+                    && $node->class->toString() === 'Schedule'
+                    && $node->name instanceof Node\Identifier
+                    && $node->name->toString() === 'command'
+                ) {
+                    if (count($node->args) > 0 && $node->args[0]->value instanceof ClassConstFetch) {
+                        $classArg = $node->args[0]->value;
+                    }
+                } elseif ($node instanceof MethodCall
+                    && $node->name instanceof Node\Identifier
+                    && $node->name->toString() === 'command'
+                ) {
+                    if (count($node->args) > 0 && $node->args[0]->value instanceof ClassConstFetch) {
+                        $classArg = $node->args[0]->value;
+                    }
+                }
+
+                if ($classArg !== null && $classArg->class instanceof Node\Name) {
+                    $this->commands[] = [
+                        'line' => $node->getLine(),
+                        'class' => $classArg->class->toString(),
+                    ];
                 }
             }
-        }
-        $consoleRoute = base_path('routes/console.php');
-        if (is_file($consoleRoute)) {
-            $files[] = $consoleRoute;
+        };
+
+        $this->traverse($stmts, $visitor);
+
+        $commands = [];
+        foreach ($visitor->commands as $cmdInfo) {
+            $fqcn = $this->resolveFqcn($fileContent, $cmdInfo['class']);
+            $commands[] = [
+                'line' => $cmdInfo['line'],
+                'class' => $fqcn ?? $cmdInfo['class'],
+            ];
         }
 
-        return $files;
+        return $commands;
     }
 }

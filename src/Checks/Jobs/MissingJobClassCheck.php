@@ -2,11 +2,14 @@
 
 namespace SajjadHossain\Doctor\Checks\Jobs;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class MissingJobClassCheck implements HealthCheck
+class MissingJobClassCheck extends PhpAstCheck
 {
     public function name(): string
     {
@@ -26,14 +29,67 @@ class MissingJobClassCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
+        $paths = config('doctor.scan_paths', [app_path(), resource_path('views')]);
 
-        $jobCalls = $this->findJobDispatchCalls();
-        foreach ($jobCalls as $jobClass) {
-            if (!class_exists($jobClass)) {
-                $locations[] = [
-                    'job' => $jobClass,
-                    'issue' => 'Job class does not exist',
-                ];
+        $dispatchMethods = ['dispatch', 'dispatchIf', 'dispatchUnless'];
+
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($file['content']);
+            if ($stmts === null) {
+                continue;
+            }
+
+            $visitor = new class($dispatchMethods) extends NodeVisitorAbstract {
+                private array $methods;
+                public array $jobs = [];
+
+                public function __construct(array $methods)
+                {
+                    $this->methods = $methods;
+                }
+
+                public function enterNode(Node $node): void
+                {
+                    if (!$node instanceof StaticCall) {
+                        return;
+                    }
+                    if (!$node->class instanceof Node\Name) {
+                        return;
+                    }
+                    if (!$node->name instanceof Node\Identifier) {
+                        return;
+                    }
+                    if (!in_array($node->name->toString(), $this->methods, true)) {
+                        return;
+                    }
+
+                    $className = $node->class->toString();
+                    $skip = ['Bus', 'Queue', 'dispatch', 'event'];
+                    if (in_array($className, $skip, true)) {
+                        return;
+                    }
+
+                    $this->jobs[] = [
+                        'line' => $node->getLine(),
+                        'class' => $className,
+                    ];
+                }
+            };
+
+            $this->traverse($stmts, $visitor);
+
+            foreach ($visitor->jobs as $jobInfo) {
+                $fqcn = $this->resolveFqcn($file['content'], $jobInfo['class']);
+                $checkClass = $fqcn ?? $jobInfo['class'];
+
+                if (!class_exists($checkClass)) {
+                    $locations[] = [
+                        'file' => $file['path'],
+                        'line' => $jobInfo['line'],
+                        'job' => $checkClass,
+                        'issue' => 'Job class does not exist',
+                    ];
+                }
             }
         }
 
@@ -56,69 +112,5 @@ class MissingJobClassCheck implements HealthCheck
             locations: $locations,
             suggestion: 'Create the job class or fix the dispatch call.',
         );
-    }
-
-    private function findJobDispatchCalls(): array
-    {
-        $jobs = [];
-        $paths = config('doctor.scan_paths', [app_path(), resource_path('views')]);
-
-        foreach ($paths as $path) {
-            if (!is_dir($path)) {
-                continue;
-            }
-
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
-
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
-
-                $content = file_get_contents($file->getRealPath());
-
-                // Match FQCN dispatch calls:  App\Jobs\SendEmail::dispatch(...)
-                // or same-namespace calls:    SendEmail::dispatch(...)
-                preg_match_all(
-                    '/([\w\\\\]+)(?:::dispatch|\s*::\s*dispatchIf|\s*::\s*dispatchUnless)\s*\(/',
-                    $content,
-                    $matches
-                );
-
-                foreach ($matches[1] as $class) {
-                    $class = ltrim($class, '\\');
-                    if (in_array($class, ['Bus', 'Queue', 'dispatch', 'event'], true)) {
-                        continue;
-                    }
-                    if (str_contains($class, '\\') || class_exists($class)) {
-                        $jobs[] = $class;
-                    } else {
-                        // Try resolving via `use` statements in this file.
-                        $resolved = $this->resolveShortClass($content, $class);
-                        if ($resolved) {
-                            $jobs[] = $resolved;
-                        }
-                    }
-                }
-            }
-        }
-
-        return array_values(array_unique($jobs));
-    }
-
-    private function resolveShortClass(string $content, string $short): ?string
-    {
-        if (preg_match_all('/^use\s+([\w\\\\]+)\s*;/m', $content, $uses)) {
-            foreach ($uses[1] as $fqcn) {
-                $parts = explode('\\', ltrim($fqcn, '\\'));
-                if (end($parts) === $short) {
-                    return ltrim($fqcn, '\\');
-                }
-            }
-        }
-
-        return null;
     }
 }
