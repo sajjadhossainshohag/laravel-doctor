@@ -2,11 +2,19 @@
 
 namespace SajjadHossain\Doctor\Checks\Mail;
 
-use SajjadHossain\Doctor\Contracts\HealthCheck;
+use PhpParser\Node;
+use PhpParser\Node\Arg;
+use PhpParser\Node\Expr\Array_;
+use PhpParser\Node\Expr\ArrayItem;
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\New_;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\PhpAstCheck;
 
-class MailableVariableMismatchCheck implements HealthCheck
+class MailableVariableMismatchCheck extends PhpAstCheck
 {
     private array $scanPaths = [];
 
@@ -36,70 +44,119 @@ class MailableVariableMismatchCheck implements HealthCheck
         $locations = [];
         $paths = $this->scanPaths ?: [app_path('Mail')];
 
-        foreach ($paths as $path) {
-            if (! is_dir($path)) {
+        $viewMethods = ['view', 'text', 'markdown'];
+
+        foreach ($this->scanPhpFiles($paths) as $file) {
+            $stmts = $this->parse($this->stripComments($file['content']));
+            if ($stmts === null) {
                 continue;
             }
 
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-            );
+            $withVars = [];
+            $viewName = null;
 
-            foreach ($files as $file) {
-                if ($file->getExtension() !== 'php') {
-                    continue;
-                }
+            $visitor = new class($viewMethods) extends NodeVisitorAbstract {
+                private array $methods;
+                public array $withVars = [];
+                public ?string $viewName = null;
 
-                $content = file_get_contents($file->getRealPath());
-                $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
-                $stripped = preg_replace('!//[^\n]*!', '', $stripped);
+                public function __construct(array $methods) { $this->methods = $methods; }
 
-                $withVars = [];
-                // ->with('name', $value) — single string key
-                if (preg_match_all('/->\s*with\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,/', $stripped, $m1)) {
-                    $withVars = array_merge($withVars, $m1[1]);
-                }
-                // ->with(['name' => $value, ...])
-                if (preg_match_all('/->\s*with\s*\(\s*\[(.*?)\]\s*\)/s', $stripped, $m2)) {
-                    foreach ($m2[1] as $block) {
-                        if (preg_match_all('/[\'"]([a-zA-Z_][a-zA-Z0-9_]*)[\'"]\s*=>/', $block, $m3)) {
-                            $withVars = array_merge($withVars, $m3[1]);
+                public function enterNode(Node $node): void
+                {
+                    // ->with('name', $value) — single string key
+                    if ($node instanceof MethodCall
+                        && $node->name instanceof Node\Identifier
+                        && $node->name->toString() === 'with'
+                    ) {
+                        if (count($node->args) >= 1 && $node->args[0]->value instanceof String_) {
+                            $this->withVars[] = $node->args[0]->value->value;
+                        }
+                        // ->with(['name' => $value, ...])
+                        if (count($node->args) >= 1 && $node->args[0]->value instanceof Array_) {
+                            foreach ($node->args[0]->value->items as $item) {
+                                if ($item instanceof ArrayItem && $item->key instanceof String_) {
+                                    $this->withVars[] = $item->key->value;
+                                }
+                            }
+                        }
+                        return;
+                    }
+
+                    // ->view('name'), ->text('name'), ->markdown('name')
+                    if ($node instanceof MethodCall
+                        && $node->name instanceof Node\Identifier
+                        && in_array($node->name->toString(), $this->methods, true)
+                        && count($node->args) > 0
+                        && $node->args[0]->value instanceof String_
+                    ) {
+                        $this->viewName = $node->args[0]->value->value;
+                        return;
+                    }
+
+                    // new Content(view: 'name') or new Content(['view' => 'name'])
+                    if (!$node instanceof New_ || !$node->class instanceof Node\Name) {
+                        return;
+                    }
+                    $parts = explode('\\', $node->class->toString());
+                    if (end($parts) !== 'Content') {
+                        return;
+                    }
+
+                    foreach ($node->args as $arg) {
+                        if (!$arg instanceof Arg) {
+                            continue;
+                        }
+
+                        if ($arg->name !== null
+                            && $arg->name instanceof Node\Identifier
+                            && in_array($arg->name->toString(), $this->methods, true)
+                            && $arg->value instanceof String_
+                            && $this->viewName === null
+                        ) {
+                            $this->viewName = $arg->value->value;
+                            continue;
+                        }
+
+                        if ($arg->name === null && $arg->value instanceof Array_) {
+                            foreach ($arg->value->items as $item) {
+                                if ($item instanceof ArrayItem
+                                    && $item->key instanceof String_
+                                    && in_array($item->key->value, $this->methods, true)
+                                    && $item->value instanceof String_
+                                    && $this->viewName === null
+                                ) {
+                                    $this->viewName = $item->value->value;
+                                }
+                            }
                         }
                     }
                 }
+            };
 
-                if (empty($withVars)) {
-                    continue;
-                }
+            $this->traverse($stmts, $visitor);
+            $withVars = $visitor->withVars;
+            $viewName = $visitor->viewName;
 
-                // Find any view reference in the mailable. Supports BOTH the legacy
-                // ->view('foo') API and the modern Content-object API
-                // (new Content(view: 'foo')).
-                $viewName = $this->firstViewName($stripped);
-                if ($viewName === null) {
-                    continue;
-                }
+            if (empty($withVars) || $viewName === null) {
+                continue;
+            }
 
-                $viewPath = $this->resolveViewPath($viewName);
-                if (! $viewPath) {
-                    continue;
-                }
+            $viewPath = $this->resolveViewPath($viewName);
+            if (!$viewPath) {
+                continue;
+            }
 
-                $viewContent = file_get_contents($viewPath);
+            $viewContent = file_get_contents($viewPath);
+            $subContents = $this->collectSubviewContents($viewContent);
+            $combined = $viewContent . "\n" . implode("\n", $subContents);
 
-                // Resolve all @include, @component, and <x-foo /> subviews
-                // from the main view and union their content so a
-                // variable used inside a partial is still considered used.
-                $subviewContents = $this->collectSubviewContents($viewContent);
-                $combined = $viewContent."\n".implode("\n", $subviewContents);
-
-                foreach ($withVars as $var) {
-                    if (! $this->variableUsedInView($combined, $var)) {
-                        $locations[] = [
-                            'file' => $file->getRealPath(),
-                            'issue' => "Variable '\${$var}' passed to view but not used in '{$viewName}' or its included partials",
-                        ];
-                    }
+            foreach ($withVars as $var) {
+                if (!$this->variableUsedInView($combined, $var)) {
+                    $locations[] = [
+                        'file' => $file['path'],
+                        'issue' => "Variable '\${$var}' passed to view but not used in '{$viewName}' or its included partials",
+                    ];
                 }
             }
         }
@@ -119,41 +176,10 @@ class MailableVariableMismatchCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: true,
-            message: count($locations).' mailable variable(s) appear unused in the template (and any included partials). This is informational — variables may be consumed by view composers or third-party listeners.',
+            message: count($locations) . ' mailable variable(s) appear unused in the template.',
             locations: $locations,
+            suggestion: 'Verify the variable is consumed by a view composer or an included partial.',
         );
-    }
-
-    private function firstViewName(string $content): ?string
-    {
-        // Legacy fluent API: ->view('foo'), ->markdown('foo'), ->text('foo').
-        // ->html('foo') is intentionally NOT included — Mailable::html()
-        // accepts raw HTML, not a view name. (See Bug 2 fix in
-        // MailableMissingViewCheck for the same reasoning.)
-        foreach (['view', 'markdown', 'text'] as $method) {
-            if (preg_match('/->\s*'.preg_quote($method, '/').'\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)/', $content, $m)) {
-                return $m[1];
-            }
-        }
-        // Modern Content API. Supports BOTH forms:
-        //   Array-key form:  new Content(['view' => 'foo', ...])
-        //   Named-argument form: new Content(view: 'foo', ...)
-        // For 'view', 'markdown', 'text' the value is a Blade view name.
-        // For 'html' the value is RAW HTML — we deliberately skip that
-        // key here, so it never resolves to a (non-existent) view path.
-        if (preg_match('/new\s+Content\s*\(/', $content)) {
-            foreach (['view', 'markdown', 'text'] as $k) {
-                // Array-key form: 'k' => 'value'
-                if (preg_match('/[\'"]'.preg_quote($k, '/').'[\'"]\s*=>\s*[\'"]([^\'"]+)[\'"]/', $content, $cm)) {
-                    return $cm[1];
-                }
-                // Named-argument form: k: 'value' (PHP 8.0+)
-                if (preg_match('/\b'.preg_quote($k, '/').'\s*:\s*[\'"]([^\'"]+)[\'"]/', $content, $cmn)) {
-                    return $cmn[1];
-                }
-            }
-        }
-        return null;
     }
 
     private function resolveViewPath(string $view): ?string
@@ -161,7 +187,7 @@ class MailableVariableMismatchCheck implements HealthCheck
         $hints = config('view.paths', [resource_path('views')]);
         $name = str_replace('.', '/', $view);
         foreach ($hints as $path) {
-            $candidate = $path.'/'.$name.'.blade.php';
+            $candidate = $path . '/' . $name . '.blade.php';
             if (file_exists($candidate)) {
                 return $candidate;
             }
@@ -170,13 +196,6 @@ class MailableVariableMismatchCheck implements HealthCheck
         return null;
     }
 
-    /**
-     * Recursively collect the contents of any @include('...') /
-     * @component('...') / <x-foo /> partials referenced from this view,
-     * so a variable used inside a partial is still considered "used".
-     *
-     * @return list<string>
-     */
     private function collectSubviewContents(string $viewContent, int $depth = 0): array
     {
         if ($depth > 5) {
@@ -190,7 +209,6 @@ class MailableVariableMismatchCheck implements HealthCheck
         if (preg_match_all('/@component\s*\(\s*[\'"]([^\'"]+)[\'"]/', $viewContent, $m2)) {
             $names = array_merge($names, $m2[1]);
         }
-        // Anonymous components: <x-foo /> or <x-foo>...</x-foo>
         if (preg_match_all('/<x-([a-z0-9.\-]+)[\s>\/]/i', $viewContent, $m3)) {
             $names = array_merge($names, $m3[1]);
         }
@@ -198,13 +216,13 @@ class MailableVariableMismatchCheck implements HealthCheck
         $hints = config('view.paths', [resource_path('views')]);
         foreach (array_unique($names) as $name) {
             $candidates = [
-                str_replace('.', '/', $name).'.blade.php',
-                'components/'.str_replace('.', '/', $name).'.blade.php',
+                str_replace('.', '/', $name) . '.blade.php',
+                'components/' . str_replace('.', '/', $name) . '.blade.php',
             ];
             foreach ($candidates as $relPath) {
                 $found = false;
                 foreach ($hints as $hint) {
-                    $candidate = $hint.'/'.$relPath;
+                    $candidate = $hint . '/' . $relPath;
                     if (file_exists($candidate)) {
                         $sub = file_get_contents($candidate);
                         $contents[] = $sub;
@@ -222,25 +240,16 @@ class MailableVariableMismatchCheck implements HealthCheck
         return $contents;
     }
 
-    /**
-     * Detect whether $var is actually used inside the Blade view, considering:
-     *   - direct:        {{ $var }}
-     *   - array access:  {{ $var['key'] }} / @foreach($var as ...)
-     *   - object access: {{ $var->prop }}
-     *   - Blade @if/@isset/@empty
-     */
     private function variableUsedInView(string $viewContent, string $var): bool
     {
-        if (preg_match('/\$' . preg_quote($var, '/') . '(?!\w)/', $viewContent)) {
+        $q = preg_quote($var, '/');
+        if (preg_match('/\$' . $q . '(?!\w)/', $viewContent)) {
             return true;
         }
-        if (preg_match('/\{\{[^}]*\$' . preg_quote($var, '/') . '(?!\w)/', $viewContent)) {
+        if (preg_match('/@(?:isset|empty)\s*\(\s*\$' . $q . '\b/', $viewContent)) {
             return true;
         }
-        if (preg_match('/@(?:isset|empty)\s*\(\s*\$' . preg_quote($var, '/') . '\b/', $viewContent)) {
-            return true;
-        }
-        if (preg_match('/@(?:foreach|forelse)\s*\(\s*\$' . preg_quote($var, '/') . '\b/', $viewContent)) {
+        if (preg_match('/@(?:foreach|forelse)\s*\(\s*\$' . $q . '\b/', $viewContent)) {
             return true;
         }
 
