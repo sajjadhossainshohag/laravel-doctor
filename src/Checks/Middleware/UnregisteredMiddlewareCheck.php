@@ -9,17 +9,10 @@ use SajjadHossain\Doctor\Enums\Severity;
 class UnregisteredMiddlewareCheck implements HealthCheck
 {
     private array $scanPaths = [];
-    private ?string $bootstrapPath = null;
 
     public function withPaths(array $paths): static
     {
         $this->scanPaths = $paths;
-        return $this;
-    }
-
-    public function withBootstrapPath(string $path): static
-    {
-        $this->bootstrapPath = $path;
         return $this;
     }
 
@@ -41,30 +34,15 @@ class UnregisteredMiddlewareCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $appPath = $this->bootstrapPath ?? base_path('bootstrap/app.php');
 
-        if (! file_exists($appPath)) {
-            return new CheckResult(
-                check: $this->name(),
-                category: $this->category(),
-                severity: $this->severity(),
-                passed: true,
-                message: 'bootstrap/app.php not found — cannot check middleware registration.',
-            );
-        }
+        $registeredAliases = $this->getRegisteredAliases();
+        $registeredGroups = $this->getRegisteredGroups();
 
-        $appContent = file_get_contents($appPath);
-        $registeredAliases = $this->extractMiddlewareAliases($appContent);
-        $registeredGroups = $this->extractMiddlewareGroups($appContent);
-
-        // Built-in middleware aliases always available in Laravel 10+/11+,
-        // whether or not the user has registered them explicitly.
         $builtinAliases = [
             'auth', 'auth.basic', 'auth.session', 'cache.headers',
             'can', 'guest', 'password.confirm', 'precognitive',
             'signed', 'subscribed', 'throttle', 'verified',
         ];
-        // Built-in middleware group names.
         $builtinGroups = ['web', 'api'];
 
         foreach ($this->scanPaths ?: config('doctor.scan_paths', [app_path()]) as $path) {
@@ -85,11 +63,6 @@ class UnregisteredMiddlewareCheck implements HealthCheck
                 $stripped = preg_replace('#/\*.*?\*/#s', '', $content);
                 $stripped = preg_replace('!//[^\n]*!', '', $stripped);
 
-                // Match both single-string form (->middleware('alias')) AND array form
-                // (->middleware(['auth', 'custom'])). We match against the
-                // UN-stripped content so quoted aliases inside ->middleware(...)
-                // are still found. Commented-out calls won't match anyway because
-                // we strip // and /* */ comments above.
                 $aliases = [];
                 if (preg_match_all('/->middleware\s*\(\s*[\'"]([a-z0-9_.-]+)[\'"]/', $stripped, $m)) {
                     foreach ($m[1] as $alias) {
@@ -118,7 +91,7 @@ class UnregisteredMiddlewareCheck implements HealthCheck
                     if (! $known) {
                         $locations[] = [
                             'file' => $file->getRealPath(),
-                            'issue' => "Middleware alias '{$alias}' is not registered in bootstrap/app.php",
+                            'issue' => "Middleware alias '{$alias}' is not registered",
                         ];
                     }
                 }
@@ -140,64 +113,41 @@ class UnregisteredMiddlewareCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations).' middleware alias(es) may not be registered.',
+            message: count($locations) . ' middleware alias(es) may not be registered.',
             locations: $locations,
-            suggestion: 'Register the middleware alias in bootstrap/app.php using ->withMiddleware().',
+            suggestion: 'Register the middleware alias or check the class exists.',
         );
     }
 
-    /**
-     * Parse bootstrap/app.php to extract middleware aliases registered via
-     * ->alias('foo', Bar::class) or ->alias(['foo' => Bar::class]).
-     *
-     * @return array<int, string>
-     */
-    private function extractMiddlewareAliases(string $content): array
+    private function getRegisteredAliases(): array
     {
         $aliases = [];
 
-        if (preg_match_all('/->alias\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,/', $content, $m)) {
-            $aliases = array_merge($aliases, $m[1]);
+        $kernel = app(\Illuminate\Contracts\Http\Kernel::class);
+        if (method_exists($kernel, 'getRouteMiddleware')) {
+            $aliases = array_merge($aliases, array_keys($kernel->getRouteMiddleware()));
         }
 
-        if (preg_match_all('/->alias\s*\(\s*\[(.*?)\]\s*\)/s', $content, $m2)) {
-            foreach ($m2[1] as $block) {
-                if (preg_match_all('/[\'"]([a-z0-9_.-]+)[\'"]\s*=>/i', $block, $m3)) {
-                    $aliases = array_merge($aliases, $m3[1]);
-                }
-            }
-        }
-
-        if (preg_match_all('/->aliases\s*\(\s*\[(.*?)\]\s*\)/s', $content, $m2)) {
-            foreach ($m2[1] as $block) {
-                if (preg_match_all('/[\'"]([a-z0-9_.-]+)[\'"]\s*=>/i', $block, $m3)) {
-                    $aliases = array_merge($aliases, $m3[1]);
-                }
-            }
+        $router = app('router');
+        if (method_exists($router, 'getMiddleware')) {
+            $aliases = array_merge($aliases, array_keys($router->getMiddleware()));
         }
 
         return array_values(array_unique($aliases));
     }
 
-    /**
-     * Parse bootstrap/app.php to extract middleware group names.
-     *
-     * @return array<int, string>
-     */
-    private function extractMiddlewareGroups(string $content): array
+    private function getRegisteredGroups(): array
     {
         $groups = [];
 
-        if (preg_match_all('/->(?:appendToGroup|prependToGroup)\s*\(\s*[\'"]([^\'"]+)[\'"]/', $content, $m)) {
-            $groups = array_merge($groups, $m[1]);
+        $kernel = app(\Illuminate\Contracts\Http\Kernel::class);
+        if (method_exists($kernel, 'getMiddlewareGroups')) {
+            $groups = array_merge($groups, array_keys($kernel->getMiddlewareGroups()));
         }
 
-        if (preg_match_all('/->group\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,/', $content, $m2)) {
-            $groups = array_merge($groups, $m2[1]);
-        }
-
-        if (preg_match_all('/\$middleware->([a-z][a-z0-9_]*)\s*\(/', $content, $m3)) {
-            $groups = array_merge($groups, $m3[1]);
+        $router = app('router');
+        if (method_exists($router, 'getMiddlewareGroups')) {
+            $groups = array_merge($groups, array_keys($router->getMiddlewareGroups()));
         }
 
         return array_values(array_unique($groups));

@@ -32,4 +32,20 @@ class InvalidMiddlewareCheckTest extends TestCase
 
         $this->assertCheckPassed($result);
     }
+
+    /** @test */
+    public function it_recognizes_kernel_registered_aliases(): void
+    {
+        // Register a custom alias into the booted Kernel, simulating
+        // what app/Http/Kernel.php's $routeMiddleware property does.
+        app('router')->aliasMiddleware('xss', \App\Http\Middleware\Authenticate::class);
+
+        Route::get('/xss-protected', fn () => '')
+            ->middleware('xss')
+            ->name('xss');
+
+        $result = (new InvalidMiddlewareCheck())->run();
+
+        $this->assertCheckPassed($result, 'Middleware alias registered in Kernel should be recognized');
+    }
 }

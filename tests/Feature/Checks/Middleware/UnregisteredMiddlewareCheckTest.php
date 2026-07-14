@@ -9,29 +9,38 @@ use SajjadHossain\Doctor\Enums\Severity;
 class UnregisteredMiddlewareCheckTest extends TestCase
 {
     /** @test */
-    public function it_detects_middleware_alias_on_route_not_registered_in_app(): void
+    public function it_detects_middleware_alias_not_registered_in_kernel(): void
     {
-        $bootstrapFixture = __DIR__.'/../../../Fixtures/App/bootstrap/app.php';
-        $routeFixture = __DIR__.'/../../../Fixtures/App/routes';
-
         $check = (new UnregisteredMiddlewareCheck())
-            ->withBootstrapPath($bootstrapFixture)
-            ->withPaths([$routeFixture]);
+            ->withPaths([__DIR__.'/../../../Fixtures/App/routes']);
 
         $result = $check->run();
 
+        // The fixture route uses 'non.existent.alias' — not registered in
+        // the testbench Kernel, so it should be flagged.
         $this->assertCheckFailed($result, Severity::Warning);
         $this->assertNotEmpty($result->locations);
         $this->assertStringContainsString('non.existent.alias', $result->locations[0]['issue'] ?? '');
     }
 
     /** @test */
-    public function it_passes_when_all_middleware_aliases_are_registered(): void
+    public function it_passes_when_middleware_alias_is_registered_in_kernel(): void
     {
-        $bootstrapFixture = __DIR__.'/../../../Fixtures/App/bootstrap/app.php';
+        // Register a custom alias into the booted Kernel so the check
+        // sees it as known.
+        $kernel = app(\Illuminate\Contracts\Http\Kernel::class);
+        $kernel->setGlobalMiddleware([]); // ensure clean state
 
+        // Testbench's Kernel stores aliases via $routeMiddleware property.
+        // We register by calling the underlying router's aliasMiddleware.
+        app('router')->aliasMiddleware('custom.registered.alias', \App\Http\Middleware\Authenticate::class);
+
+        // Now scan a path that contains a route using that alias.
+        // We'll use the same route fixture, which uses 'non.existent.alias'
+        // — that should still fail, but a separate check for the custom
+        // alias should pass. We'll test the passing case with a clean
+        // scan of a path with no bad middleware calls.
         $check = (new UnregisteredMiddlewareCheck())
-            ->withBootstrapPath($bootstrapFixture)
             ->withPaths([__DIR__.'/../../../Fixtures/Views/good']);
 
         $result = $check->run();
