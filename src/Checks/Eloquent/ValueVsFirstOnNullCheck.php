@@ -4,6 +4,7 @@ namespace SajjadHossain\Doctor\Checks\Eloquent;
 
 use PhpParser\Node;
 use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\PropertyFetch;
 use PhpParser\Node\Stmt\If_;
 use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
@@ -45,13 +46,26 @@ class ValueVsFirstOnNullCheck extends PhpAstCheck
 
                 public function enterNode(Node $node): void
                 {
-                    // Track if-statement boundaries
                     if ($node instanceof If_) {
                         $this->ifDepth++;
                         return;
                     }
 
-                    // $x->first()->someProperty
+                    // ->first()->someProperty (PropertyFetch)
+                    if ($node instanceof PropertyFetch
+                        && $node->var instanceof MethodCall
+                        && $node->var->name instanceof Node\Identifier
+                        && $node->var->name->toString() === 'first'
+                        && count($node->var->args) === 0
+                    ) {
+                        $this->firstCalls[] = [
+                            'line' => $node->getLine(),
+                            'guarded' => $this->ifDepth > 0,
+                        ];
+                        return;
+                    }
+
+                    // ->first()->someMethod() (MethodCall)
                     if ($node instanceof MethodCall
                         && $node->name instanceof Node\Identifier
                         && $node->name->toString() !== 'first'
@@ -60,17 +74,6 @@ class ValueVsFirstOnNullCheck extends PhpAstCheck
                         && $node->var->name->toString() === 'first'
                         && count($node->var->args) === 0
                     ) {
-                        // Check if there's a nullsafe ?-> operator anywhere in chain
-                        $safe = false;
-                        $current = $node;
-                        while ($current instanceof MethodCall) {
-                            if (isset($current->getAttributes()['kind']) && $current->getAttribute('kind') === 1) {
-                                // kind 1 might indicate ?-> ... actually php-parser doesn't do this
-                                // Let's check the raw line for ?->
-                            }
-                            $current = $current->var;
-                        }
-
                         $this->firstCalls[] = [
                             'line' => $node->getLine(),
                             'guarded' => $this->ifDepth > 0,
@@ -93,7 +96,6 @@ class ValueVsFirstOnNullCheck extends PhpAstCheck
                     continue;
                 }
 
-                // Fallback to regex context check for complex guards
                 $content = $file['content'];
                 $lines = explode("\n", $content);
                 $lineIdx = $call['line'] - 1;
@@ -101,16 +103,13 @@ class ValueVsFirstOnNullCheck extends PhpAstCheck
                 $contextLines = array_slice($lines, $contextStart, $lineIdx - $contextStart + 1);
                 $context = implode("\n", $contextLines);
 
-                // Nullsafe check
                 if (preg_match('/\?\s*->\s*first/', $context)) {
                     continue;
                 }
-                // groupBy/map closure guard
                 if (preg_match('/\b(groupBy|partition)\s*\(/', $context)
                     && preg_match('/\b(map|each|filter|transform)\s*\(\s*function\s*\(/', $context)) {
                     continue;
                 }
-                // count/isNotEmpty guard
                 if (preg_match('/if\s*\([^)]*(?:->count\s*\(\s*\)\s*[!><]|->isNotEmpty\s*\(\s*\))/', $context)) {
                     continue;
                 }
