@@ -6,6 +6,7 @@ use Illuminate\Console\Command;
 use SajjadHossain\Doctor\CheckRegistry;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Output\ConsoleRenderer;
+use SajjadHossain\Doctor\Enums\Severity;
 
 class ScanCommand extends Command
 {
@@ -39,14 +40,31 @@ class ScanCommand extends Command
             return 0;
         }
 
-        $results = [];
-        $start = microtime(true);
+        $total = count($instances);
+        $this->newLine();
+        $this->line("  <fg=cyan>Running {$total} checks...</>");
+        $this->newLine();
 
-        foreach ($instances as $check) {
-            $results[] = $check->run();
+        $results = [];
+        $overallStart = microtime(true);
+
+        foreach ($instances as $i => $check) {
+            $name = $check->name();
+            $this->output->write("  <fg=gray>[{$this->pad($i + 1, $total)}/{$total}]</> {$name}... ");
+
+            $checkStart = microtime(true);
+            $result = $check->run();
+            $checkDuration = (microtime(true) - $checkStart) * 1000;
+            $results[] = $result;
+
+            $icon = $result->passed ? '✓' : '✗';
+            $color = $result->passed ? 'green' : ($result->severity === Severity::Error ? 'red' : 'yellow');
+            $ms = number_format($checkDuration, 0);
+            $this->output->writeln("<fg={$color}>{$icon}</> <fg=gray>{$ms}ms</>");
         }
 
-        $duration = (microtime(true) - $start) * 1000;
+        $this->newLine();
+        $duration = (microtime(true) - $overallStart) * 1000;
 
         if ($this->option('json')) {
             $this->line((new \SajjadHossain\Doctor\Output\JsonRenderer())->render($results));
@@ -63,6 +81,11 @@ class ScanCommand extends Command
         $renderer->render($this->output, $results, $duration, $this->option('verbose'));
 
         return $this->failOnExitCode($results);
+    }
+
+    private function pad(int $current, int $total): string
+    {
+        return str_pad((string) $current, strlen((string) $total), ' ', STR_PAD_LEFT);
     }
 
     private function failOnExitCode(array $results): int
