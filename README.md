@@ -8,6 +8,12 @@ Run a single artisan command to scan your entire Laravel codebase for 50+ common
 
 ---
 
+## Installation
+
+```bash
+composer require sajjadhossainshohag/laravel-doctor --dev
+```
+
 ## Requirements
 
 - PHP ^8.2
@@ -157,23 +163,94 @@ php artisan doctor:cache:clear
 
 ## Configuration
 
-```php
-// config/doctor.php
-return [
-    'cache' => [
-        'enabled' => true,     // cache scan results
-        'ttl'     => 3600,     // seconds
-        'store'   => 'file',   // cache store
-    ],
-    'scan_paths' => [
-        app_path(),
-        resource_path('views'),
-    ],
-    'ignore' => [
-        'container' => [],     // file patterns to ignore for container checks
-    ],
-];
+Publish the config to customize:
+
+```bash
+php artisan vendor:publish --tag=doctor-config
 ```
+
+### `enabled`
+
+```php
+'enabled' => env('DOCTOR_ENABLED', true),
+```
+
+Set to `false` to disable all checks globally.
+
+### `scan_paths`
+
+```php
+'scan_paths' => [
+    app_path(),
+    resource_path('views'),
+],
+```
+
+Directories scanned for PHP/Blade files. Add paths for custom namespaces or package directories.
+
+### `ignore`
+
+```php
+'ignore' => [
+    'routes'     => ['telescope.*', 'debugbar.*', 'horizon.*'],
+    'views'      => ['vendor/*'],
+    'components' => ['vendor/*'],
+    'eloquent'   => ['vendor/*', 'migrations/*'],
+    'container'  => ['vendor/*'],
+    'events'     => ['vendor/*'],
+    'mail'       => ['vendor/*'],
+    'middleware' => ['vendor/*'],
+    'validation' => ['vendor/*'],
+    'storage'    => ['vendor/*'],
+    'cache'      => ['vendor/*'],
+    'schedule'   => ['vendor/*'],
+    'gates'      => ['vendor/*'],
+    'livewire'   => ['vendor/*'],
+    'config'     => ['vendor/*'],
+],
+```
+
+Glob patterns per category to skip noisy files (e.g. Telescope, Debugbar, Horizon routes, vendor views).
+
+### `cache`
+
+```php
+'cache' => [
+    'enabled' => true,
+    'ttl'     => 3600,           // seconds
+    'store'   => env('DOCTOR_CACHE_STORE', 'file'),
+],
+```
+
+Caches scan results per check. Set `enabled` to `false` or use `--no-cache` to always re-scan.
+
+### `health_score`
+
+```php
+'health_score' => [
+    'weights' => [
+        'schema'     => 12,
+        'eloquent'   => 12,
+        'routes'     => 10,
+        'views'      => 8,
+        'components' => 5,
+        'jobs'       => 5,
+        'cache'      => 5,
+        'storage'    => 5,
+        'validation' => 5,
+        'container'  => 5,
+        'events'     => 4,
+        'mail'       => 4,
+        'middleware' => 4,
+        'schedule'   => 4,
+        'gates'      => 3,
+        'livewire'   => 3,
+        'config'     => 2,
+    ],
+],
+```
+
+Relative weight of each category for calculating an overall code health score.
 
 ---
 

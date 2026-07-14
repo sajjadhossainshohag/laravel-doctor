@@ -71,10 +71,6 @@ class DoctorServiceProvider extends ServiceProvider
             __DIR__ . '/../config/doctor.php' => config_path('doctor.php'),
         ], 'doctor-config');
 
-        $this->publishes([
-            __DIR__ . '/../database/migrations/' => database_path('migrations'),
-        ], 'doctor-migrations');
-
         if ($this->app->runningInConsole()) {
             $registry = $this->app->make(CheckRegistry::class);
             // Eloquent
