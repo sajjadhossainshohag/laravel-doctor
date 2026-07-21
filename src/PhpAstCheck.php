@@ -52,6 +52,26 @@ abstract class PhpAstCheck implements HealthCheck
         $ignore = config("doctor.ignore.{$this->category()}", []);
 
         foreach ($paths as $path) {
+            if (is_file($path)) {
+                if (pathinfo($path, PATHINFO_EXTENSION) !== 'php') {
+                    continue;
+                }
+
+                $realPath = realpath($path);
+
+                if ($realPath === false) {
+                    continue;
+                }
+
+                if ($this->isIgnored($realPath, $ignore)) {
+                    continue;
+                }
+
+                yield ['path' => $realPath, 'content' => file_get_contents($realPath)];
+
+                continue;
+            }
+
             if (!is_dir($path)) {
                 continue;
             }

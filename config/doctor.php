@@ -62,6 +62,7 @@ return [
         'livewire'   => ['vendor/*'],
         'config'     => ['vendor/*'],
         'debug'      => ['vendor/*'],
+        'security'   => ['vendor/*'],
     ],
 
     /*
@@ -114,6 +115,7 @@ return [
             'livewire'   => 3,
             'config'     => 2,
             'debug'      => 3,
+            'security'   => 10,
         ],
     ],
 
