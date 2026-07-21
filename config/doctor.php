@@ -61,6 +61,7 @@ return [
         'gates'      => ['vendor/*'],
         'livewire'   => ['vendor/*'],
         'config'     => ['vendor/*'],
+        'debug'      => ['vendor/*'],
     ],
 
     /*
@@ -112,6 +113,7 @@ return [
             'gates'      => 3,
             'livewire'   => 3,
             'config'     => 2,
+            'debug'      => 3,
         ],
     ],
 

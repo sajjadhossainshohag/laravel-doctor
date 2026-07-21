@@ -50,6 +50,7 @@ use SajjadHossain\Doctor\Checks\Views\MissingComponentCheck;
 use SajjadHossain\Doctor\Checks\Views\MissingExtendsCheck;
 use SajjadHossain\Doctor\Checks\Views\MissingIncludeCheck;
 use SajjadHossain\Doctor\Checks\Views\StackPushMismatchCheck;
+use SajjadHossain\Doctor\Checks\Debug\DebugStatementLeftInCheck;
 use SajjadHossain\Doctor\Commands\CacheClearCommand;
 use SajjadHossain\Doctor\Commands\ScanCommand;
 use SajjadHossain\Doctor\Commands\WorkerCommand;
@@ -156,6 +157,9 @@ class DoctorServiceProvider extends ServiceProvider
             $registry->register(MissingExtendsCheck::class);
             $registry->register(MissingIncludeCheck::class);
             $registry->register(StackPushMismatchCheck::class);
+
+            // Debug
+            $registry->register(DebugStatementLeftInCheck::class);
 
             $this->commands([
                 ScanCommand::class,
