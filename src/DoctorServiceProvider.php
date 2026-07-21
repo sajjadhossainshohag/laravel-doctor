@@ -35,6 +35,7 @@ use SajjadHossain\Doctor\Checks\Routes\DuplicateUrisCheck;
 use SajjadHossain\Doctor\Checks\Routes\InvalidMiddlewareCheck;
 use SajjadHossain\Doctor\Checks\Routes\MissingControllerCheck;
 use SajjadHossain\Doctor\Checks\Routes\MissingControllerMethodCheck;
+use SajjadHossain\Doctor\Checks\Routes\RouteClosureBreaksCacheCheck;
 use SajjadHossain\Doctor\Checks\Schedule\DeletedScheduledCommandCheck;
 use SajjadHossain\Doctor\Checks\Schedule\OverlappingJobsWithoutLockCheck;
 use SajjadHossain\Doctor\Checks\Schedule\ScheduledCommandNotExistsCheck;
@@ -147,6 +148,7 @@ class DoctorServiceProvider extends ServiceProvider
             $registry->register(InvalidMiddlewareCheck::class);
             $registry->register(MissingControllerCheck::class);
             $registry->register(MissingControllerMethodCheck::class);
+            $registry->register(RouteClosureBreaksCacheCheck::class);
 
             // Schema
             $registry->register(ColumnMismatchCheck::class);
