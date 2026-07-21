@@ -88,6 +88,7 @@ php artisan doctor:cache:clear
 - **DuplicateRouteNamesCheck** — two or more routes share the same `->name()`
 - **DuplicateUrisCheck** — two or more routes share the same URI + HTTP method
 - **InvalidMiddlewareCheck** — route references middleware that is not registered
+- **RouteClosureBreaksCacheCheck** — route uses closures instead of controller strings, preventing `php artisan route:cache`
 
 ### Views
 - **MissingIncludeCheck** — `@include('view')` references a view that doesn't exist
@@ -108,6 +109,7 @@ php artisan doctor:cache:clear
 - **ValueVsFirstOnNullCheck** — `->first()->property` without a null guard (crashes on empty result)
 - **MissingGuardedOrFillableCheck** — model has neither `$fillable` nor `$guarded` (mass-assignment unprotected)
 - **AccessorMutatorStyleConflictCheck** — model mixes old-style accessors with new `Attribute::make()` pattern
+- **GetThenCountCheck** — `->get()` or `->all()` followed by `->count()` instead of a single `->count()` query
 
 ### Schema / Database
 - **ColumnMismatchCheck** — `$fillable` or `$casts` columns don't exist in the actual database table
@@ -119,11 +121,14 @@ php artisan doctor:cache:clear
 ### Config
 - **EarlyConfigAccessCheck** — `config()` called inside a service provider's `register()` method
 - **AbortIfWrongHttpCodeCheck** — `abort_if()` / `abort_unless()` called with a code below 400
+- **NonExistentConfigFileCheck** — `config('file.key')` references a config file that doesn't exist
+- **NonExistentConfigKeyCheck** — `config('file.key')` references a config key that doesn't exist
 
-### Env
-- **AppKeyCheck** — `APP_KEY` is empty, placeholder, or incomplete
-- **MissingEnvKeysCheck** — `env('KEY')` references a key not defined in `.env`
-- **EnvExampleMismatchCheck** — `.env` has keys missing from `.env.example`
+### Security
+- **RequestAllInCreateCheck** — raw `request()->all()` passed to mass-assignment methods (`create()`, `update()`), bypassing `$fillable` protection
+
+### Debug
+- **DebugStatementLeftInCheck** — `dd()`, `dump()`, `var_dump()`, `ray()`, etc. left in PHP or Blade files
 
 ### Jobs / Queue
 - **MissingJobClassCheck** — `Job::dispatch()` references a class that doesn't exist
@@ -218,6 +223,8 @@ Directories scanned for PHP/Blade files. Add paths for custom namespaces or pack
     'gates'      => ['vendor/*'],
     'livewire'   => ['vendor/*'],
     'config'     => ['vendor/*'],
+    'security'   => ['vendor/*'],
+    'debug'      => ['vendor/*'],
 ],
 ```
 
@@ -257,6 +264,8 @@ Caches scan results per check. Set `enabled` to `false` or use `--no-cache` to a
         'gates'      => 3,
         'livewire'   => 3,
         'config'     => 2,
+        'debug'      => 3,
+        'security'   => 10,
     ],
 ],
 ```
