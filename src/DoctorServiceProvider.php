@@ -13,6 +13,7 @@ use SajjadHossain\Doctor\Checks\Config\EarlyConfigAccessCheck;
 use SajjadHossain\Doctor\Checks\Container\InterfaceBoundToDeletedConcreteCheck;
 use SajjadHossain\Doctor\Checks\Container\SingletonAfterFirstResolveCheck;
 use SajjadHossain\Doctor\Checks\Eloquent\AccessorMutatorStyleConflictCheck;
+use SajjadHossain\Doctor\Checks\Eloquent\GetThenCountCheck;
 use SajjadHossain\Doctor\Checks\Eloquent\MissingGuardedOrFillableCheck;
 use SajjadHossain\Doctor\Checks\Eloquent\ValueVsFirstOnNullCheck;
 use SajjadHossain\Doctor\Checks\Eloquent\WithCountOnUndefinedRelationshipCheck;
@@ -81,6 +82,7 @@ class DoctorServiceProvider extends ServiceProvider
             $registry->register(ValueVsFirstOnNullCheck::class);
             $registry->register(MissingGuardedOrFillableCheck::class);
             $registry->register(AccessorMutatorStyleConflictCheck::class);
+            $registry->register(GetThenCountCheck::class);
 
             // Container
             $registry->register(InterfaceBoundToDeletedConcreteCheck::class);
