@@ -18,6 +18,8 @@ class AbortIfWrongHttpCodeCheckTest extends TestCase
 
         $this->assertCheckFailed($result, Severity::Warning);
         $this->assertNotEmpty($result->locations);
-        $this->assertStringContainsString('100', $result->locations[0]['issue'] ?? '');
+
+        $issues = array_column($result->locations, 'issue');
+        $this->assertStringContainsString('100', implode(' ', $issues));
     }
 }

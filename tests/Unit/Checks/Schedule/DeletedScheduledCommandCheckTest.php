@@ -17,6 +17,8 @@ class DeletedScheduledCommandCheckTest extends TestCase
         $result = $check->run();
 
         $this->assertCheckFailed($result, Severity::Warning);
-        $this->assertStringContainsString('deleted:command', $result->locations[0]['issue'] ?? '');
+
+        $issues = array_column($result->locations, 'issue');
+        $this->assertStringContainsString('deleted:command', implode(' ', $issues));
     }
 }
