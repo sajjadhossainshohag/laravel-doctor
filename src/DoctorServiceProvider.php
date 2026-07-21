@@ -10,6 +10,8 @@ use SajjadHossain\Doctor\Checks\Components\ComponentClassCheck;
 use SajjadHossain\Doctor\Checks\Components\ComponentNamespaceCheck;
 use SajjadHossain\Doctor\Checks\Config\AbortIfWrongHttpCodeCheck;
 use SajjadHossain\Doctor\Checks\Config\EarlyConfigAccessCheck;
+use SajjadHossain\Doctor\Checks\Config\NonExistentConfigFileCheck;
+use SajjadHossain\Doctor\Checks\Config\NonExistentConfigKeyCheck;
 use SajjadHossain\Doctor\Checks\Container\InterfaceBoundToDeletedConcreteCheck;
 use SajjadHossain\Doctor\Checks\Container\SingletonAfterFirstResolveCheck;
 use SajjadHossain\Doctor\Checks\Eloquent\AccessorMutatorStyleConflictCheck;
@@ -136,6 +138,8 @@ class DoctorServiceProvider extends ServiceProvider
             // Config
             $registry->register(EarlyConfigAccessCheck::class);
             $registry->register(AbortIfWrongHttpCodeCheck::class);
+            $registry->register(NonExistentConfigFileCheck::class);
+            $registry->register(NonExistentConfigKeyCheck::class);
 
             // Blade
             $registry->register(MissingNamedRoutesCheck::class);
