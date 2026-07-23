@@ -15,13 +15,13 @@ Run a single artisan command to scan your entire Laravel codebase for 50+ common
 ## Installation
 
 ```bash
-composer require sajjadhossainshohag/laravel-doctor:0.1.0-beta.3 --dev
+composer require sajjadhossainshohag/laravel-doctor:^0.2.0 --dev
 ```
 
 ## Requirements
 
-- PHP ^8.2
-- Laravel ^11.0 | ^12.0 | ^13.0
+- PHP ^8.1
+- Laravel ^10.0 | ^11.0 | ^12.0 | ^13.0
 
 Publish the config (optional):
 
@@ -46,7 +46,7 @@ php artisan doctor:scan
 | `--no-cache` | Skip cached results |
 | `--parallel` | Distribute checks across parallel subprocesses |
 | `--workers=N` | Number of parallel workers (auto-detected from CPU by default) |
-| `--format=agent` | Machine-readable JSON for AI agents (auto-detected in OpenCode/Claude Code) |
+| `--format=agent` | Machine-readable JSON for AI agents (auto-detected in OpenCode/Claude Code when `laravel/agent-detector` is installed) |
 | `--help` | Display help |
 
 ### Examples
@@ -73,7 +73,7 @@ php artisan doctor:scan --parallel
 # Run checks in parallel with custom worker count
 php artisan doctor:scan --parallel --workers=8
 
-# Agent-readable output (auto-detected in OpenCode/Claude Code)
+# Agent-readable output (auto-detected when laravel/agent-detector is installed)
 php artisan doctor:scan --format=agent
 ```
 
