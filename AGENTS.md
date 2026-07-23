@@ -16,7 +16,8 @@
 | `vendor/bin/phpunit --filter="test_method_name"` | Single test |
 | `php artisan doctor:scan` | Run health scan in a Laravel project |
 | `php artisan doctor:scan --only=routes,views` | Filter by category |
-| `php artisan doctor:scan --json` | JSON output |
+| `php artisan doctor:scan --json` | JSON output (full metadata) |
+| `php artisan doctor:scan --format=agent` | Minimal JSON for AI agents (auto-detected) |
 | `php artisan doctor:scan --fail-on=error,warning` | Exit 1 if issues found |
 | `php artisan doctor:scan --no-cache` | Skip cached results |
 | `php artisan doctor:scan --parallel` | Run checks in parallel subprocesses |
@@ -38,6 +39,8 @@ No linter, formatter, or static analysis tooling is configured.
 - **Ignore patterns:** `scanPhpFiles()` applies `config('doctor.ignore.{category}')` centrally — all checks skip vendor/noisy files automatically.
 - **Persistent result cache:** `ScanResultCache` backed by Laravel Cache. Categories cached independently, invalidation via `--no-cache` or `doctor:cache:clear`.
 - **Parallel execution:** `ParallelRunner` spawns subprocesses via `proc_open` — each runs `doctor:worker --only=... --output=...` with category groups. Results serialized to temp files, merged in the parent process. Fallback to sequential on worker failure.
+- **Agent detection:** `laravel/agent-detector` detects OpenCode, Claude Code, Cursor, Copilot, etc. When detected (or `--format=agent` is passed), `ScanCommand` suppresses all ANSI/progress output and uses `AgentRenderer` for minimal JSON: `{"status":"pass","issues":0}`.
+- **Allowlisted env keys:** `MissingEnvKeysCheck` reads `config('doctor.allowlisted_env_keys')` — a default list of 48 known-optional Laravel stock env vars (session, cache, database, mail, queue, etc.). Users can override via published config. Test seam: `withAllowlistedKeys()`.
 - **Entrypoints:** `DoctorServiceProvider`, `ScanCommand`, `CacheClearCommand`, `WorkerCommand` (internal). Facade alias: `Doctor`.
 
 ## Namespace map
