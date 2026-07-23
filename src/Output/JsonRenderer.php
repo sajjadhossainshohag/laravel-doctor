@@ -29,7 +29,7 @@ class JsonRenderer
         }
 
         return json_encode([
-            'version' => '0.1.0-beta.2',
+            'version' => '0.1.0-beta.3',
             'scanned_at' => now()->toIso8601String(),
             'laravel_version' => app()->version(),
             'php_version' => phpversion(),
