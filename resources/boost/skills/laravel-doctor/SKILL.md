@@ -23,21 +23,28 @@ php artisan doctor:scan --fail-on=error                  # Exit code 1 on errors
 php artisan doctor:scan --no-cache                       # Force re-scan, skip cached results
 php artisan doctor:scan --parallel                       # Run checks in parallel subprocesses
 php artisan doctor:scan --parallel --workers=8           # Parallel with custom worker count
-php artisan doctor:scan --json                           # Machine-readable JSON output
+php artisan doctor:scan --json                           # Full JSON output (includes metadata)
+php artisan doctor:scan --format=agent                   # Minimal JSON for AI agents (auto-detected)
 php artisan doctor:scan --html                           # HTML report
-php artisan doctor:scan -v                               # Show all issues (not just first 5 per check)
 php artisan doctor:cache:clear                           # Clear cached scan results
 ```
 
 ### Parsing results programmatically
 
-**Always use `--json` when consuming output programmatically.** The human-readable format uses ✓/✗ glyphs and ANSI color codes — parsing it is unreliable. Example:
+**Always use `--json` or `--format=agent` when consuming output programmatically.** The human-readable format uses ✓/✗ glyphs and ANSI color codes — parsing it is unreliable.
 
+Use `--format=agent` for AI agents (auto-detected in OpenCode/Claude Code via `laravel/agent-detector`):
+```
+php artisan doctor:scan --format=agent
+```
+Output: `{"status":"pass","issues":0}` or `{"status":"fail","issues":3,"results":[...]}` - minimal, no metadata, no ANSI.
+
+Use `--json` for full metadata (version, timestamps, summary counts):
 ```
 php artisan doctor:scan --json
 ```
 
-JSON output is a structured array of check results with `check`, `category`, `severity`, `passed`, `message`, `locations[]`, and `suggestion` fields. Reserve the human-readable output only for relaying results directly to the user.
+Both outputs contain `check`, `category`, `severity`, `passed`, `message`, `locations[]`, and `suggestion` fields. Reserve the human-readable output only for relaying results directly to the user.
 
 ### Requirements at scan time
 
@@ -160,10 +167,22 @@ Fix only after verifying the issue is real:
 - **Invalid middleware** → Register the alias in your middleware configuration. Check which structure your project uses: Laravel 11+ typically uses `bootstrap/app.php` `->withMiddleware()`, Laravel 10 and earlier use `app/Http/Kernel.php` `$routeMiddleware` / `$middlewareAliases`. Inspect your project rather than assuming.
 - **Missing @extends/@include/@component** → Create the view file or fix the path
 - **Column Mismatch** → Run `php artisan migrate` or update the model's `$fillable`
-- **Missing Env Keys** → Add the key to `.env.example`
+- **Missing Env Keys** → Add the key to `.env` or `.env.example`, or add it to `allowlisted_env_keys` in config if it's intentionally optional (like stock Laravel service credentials)
 - **Undefined Disk** → Add the disk to `config/filesystems.php`
 - **Job Tries Zero** → Add `public $tries = 3;` if the job should retry; if it's intentionally fire-and-forget, ignore
 - **Middleware Not Registered** → Register in Kernel (same version check as Invalid Middleware above)
+
+## Config
+
+Publish the config to customize behavior:
+```
+php artisan vendor:publish --tag=doctor-config
+```
+
+Published `config/doctor.php` lets you:
+- Add custom env keys to `allowlisted_env_keys` so known-optional keys aren't flagged
+- Adjust `ignore` patterns per category
+- Tune cache TTL, health score weights, and scan paths
 
 ## Disabling a check
 
