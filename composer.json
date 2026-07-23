@@ -16,21 +16,23 @@
     }
   ],
   "require": {
-    "php": "^8.2",
-    "illuminate/console": "^11.0|^12.0|^13.0",
-    "illuminate/contracts": "^11.0|^12.0|^13.0",
-    "illuminate/http": "^11.0|^12.0|^13.0",
-    "illuminate/support": "^11.0|^12.0|^13.0",
-    "illuminate/database": "^11.0|^12.0|^13.0",
-    "illuminate/view": "^11.0|^12.0|^13.0",
-    "illuminate/routing": "^11.0|^12.0|^13.0",
-    "illuminate/cache": "^11.0|^12.0|^13.0",
-    "nikic/php-parser": "^5.0",
-    "laravel/agent-detector": "^2.0"
+    "php": "^8.1",
+    "illuminate/console": "^10.0|^11.0|^12.0|^13.0",
+    "illuminate/contracts": "^10.0|^11.0|^12.0|^13.0",
+    "illuminate/http": "^10.0|^11.0|^12.0|^13.0",
+    "illuminate/support": "^10.0|^11.0|^12.0|^13.0",
+    "illuminate/database": "^10.0|^11.0|^12.0|^13.0",
+    "illuminate/view": "^10.0|^11.0|^12.0|^13.0",
+    "illuminate/routing": "^10.0|^11.0|^12.0|^13.0",
+    "illuminate/cache": "^10.0|^11.0|^12.0|^13.0",
+    "nikic/php-parser": "^5.0"
+  },
+  "suggest": {
+    "laravel/agent-detector": "^2.0 — Auto-detect AI coding agents (requires PHP 8.2+) for agent-friendly output format (required for automatic --format=agent detection)."
   },
   "require-dev": {
     "phpunit/phpunit": "^10.0|^11.0",
-    "orchestra/testbench": "^9.0|^10.0|^11.0"
+    "orchestra/testbench": "^8.0|^9.0|^10.0|^11.0"
   },
   "autoload": {
     "psr-4": {

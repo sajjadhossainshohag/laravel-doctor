@@ -26,11 +26,8 @@ class UnregisteredMiddlewareCheckTest extends TestCase
     /** @test */
     public function it_passes_when_middleware_alias_is_registered_in_kernel(): void
     {
-        // Register a custom alias into the booted Kernel so the check
+        // Register a custom alias into the booted Router so the check
         // sees it as known.
-        $kernel = app(\Illuminate\Contracts\Http\Kernel::class);
-        $kernel->setGlobalMiddleware([]); // ensure clean state
-
         // Testbench's Kernel stores aliases via $routeMiddleware property.
         // We register by calling the underlying router's aliasMiddleware.
         app('router')->aliasMiddleware('custom.registered.alias', \App\Http\Middleware\Authenticate::class);

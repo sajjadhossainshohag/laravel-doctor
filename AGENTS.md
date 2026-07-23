@@ -4,7 +4,7 @@
 
 - **Composer library** (`sajjadhossainshohag/laravel-doctor`), not a standalone app.
 - Static analysis tool for Laravel codebases. Scans PHP/Blade source for 50+ issues across 18 categories.
-- PHP ^8.2, supports Laravel ^11.0|^12.0|^13.0.
+- PHP ^8.1, supports Laravel ^10.0|^11.0|^12.0|^13.0.
 
 ## Commands
 
@@ -39,7 +39,7 @@ No linter, formatter, or static analysis tooling is configured.
 - **Ignore patterns:** `scanPhpFiles()` applies `config('doctor.ignore.{category}')` centrally — all checks skip vendor/noisy files automatically.
 - **Persistent result cache:** `ScanResultCache` backed by Laravel Cache. Categories cached independently, invalidation via `--no-cache` or `doctor:cache:clear`.
 - **Parallel execution:** `ParallelRunner` spawns subprocesses via `proc_open` — each runs `doctor:worker --only=... --output=...` with category groups. Results serialized to temp files, merged in the parent process. Fallback to sequential on worker failure.
-- **Agent detection:** `laravel/agent-detector` detects OpenCode, Claude Code, Cursor, Copilot, etc. When detected (or `--format=agent` is passed), `ScanCommand` suppresses all ANSI/progress output and uses `AgentRenderer` for minimal JSON: `{"status":"pass","issues":0}`.
+- **Agent detection:** `laravel/agent-detector` (optional — `suggest` in composer.json) detects OpenCode, Claude Code, Cursor, Copilot, etc. When detected (or `--format=agent` is passed), `ScanCommand` suppresses all ANSI/progress output and uses `AgentRenderer` for minimal JSON: `{"status":"pass","issues":0}`. If `laravel/agent-detector` is not installed (requires PHP 8.2+), only the explicit `--format=agent` flag triggers agent output.
 - **Allowlisted env keys:** `MissingEnvKeysCheck` reads `config('doctor.allowlisted_env_keys')` — a default list of 48 known-optional Laravel stock env vars (session, cache, database, mail, queue, etc.). Users can override via published config. Test seam: `withAllowlistedKeys()`.
 - **Entrypoints:** `DoctorServiceProvider`, `ScanCommand`, `CacheClearCommand`, `WorkerCommand` (internal). Facade alias: `Doctor`.
 
@@ -54,7 +54,7 @@ Check implementations live under `src/Checks/{Category}/`.
 
 ## Testing
 
-- Uses `orchestra/testbench` (^9.0|^10.0|^11.0). Base: `tests/TestCase.php` extends `Orchestra\Testbench\TestCase`.
+- Uses `orchestra/testbench` (^8.0|^9.0|^10.0|^11.0). Base: `tests/TestCase.php` extends `Orchestra\Testbench\TestCase`.
 - Test helpers: `assertCheckFailed(CheckResult $result, Severity $severity, ?string $messageContains = null)` and `assertCheckPassed(CheckResult $result)`.
 - **31 Unit** tests (isolated check logic), **18 Feature** tests (full Laravel boot, command integration).
 - Fixtures in `tests/Fixtures/` mirror a real Laravel app (Models, Jobs, Mail, routes, views, etc.).
@@ -62,10 +62,10 @@ Check implementations live under `src/Checks/{Category}/`.
 
 ## CI
 
-`.github/workflows/ci.yml` — matrix: PHP 8.2/8.3/8.4 × Laravel 11/12/13 × prefer-lowest/prefer-stable. Excludes PHP 8.2 + Laravel 13. Coverage disabled.
+`.github/workflows/ci.yml` — matrix: PHP 8.1/8.2/8.3/8.4 × Laravel 10/11/12/13 × prefer-lowest/prefer-stable. Excludes PHP 8.1 + Laravel 12/13, PHP 8.2 + Laravel 13. Coverage disabled.
 
 ## Conventions
 
-- PHP 8.2+ features used throughout: readonly properties, enums, named arguments, typed class constants.
+- PHP 8.1+ features used throughout: readonly properties, enums, named arguments.
 - Checks are stateless — instantiated fresh per scan run. No constructor injection; use fluent setters for test seams (e.g. `withPaths()`, `withEnvFile()`).
 - `composer.lock` is gitignored. CI regenerates it each run.
