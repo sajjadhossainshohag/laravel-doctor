@@ -79,7 +79,7 @@ class MissingJobClassCheck extends PhpAstCheck
             $this->traverse($stmts, $visitor);
 
             foreach ($visitor->jobs as $jobInfo) {
-                $fqcn = $this->resolveFqcn($file['content'], $jobInfo['class']);
+                $fqcn = $this->resolveFqcn($file['content'], $jobInfo['class'], $stmts);
                 $checkClass = $fqcn ?? $jobInfo['class'];
 
                 if (!class_exists($checkClass)) {

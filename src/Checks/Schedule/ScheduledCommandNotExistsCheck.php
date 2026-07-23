@@ -139,7 +139,7 @@ class ScheduledCommandNotExistsCheck extends PhpAstCheck
 
         $commands = [];
         foreach ($visitor->commands as $cmdInfo) {
-            $fqcn = $this->resolveFqcn($fileContent, $cmdInfo['class']);
+            $fqcn = $this->resolveFqcn($fileContent, $cmdInfo['class'], $stmts);
             $commands[] = [
                 'line' => $cmdInfo['line'],
                 'class' => $fqcn ?? $cmdInfo['class'],

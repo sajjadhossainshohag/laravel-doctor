@@ -150,7 +150,7 @@ class MissingListenerClassCheck extends PhpAstCheck
 
             foreach ($visitor->listeners as $listenerInfo) {
                 $className = $listenerInfo['class'];
-                $fqcn = $this->resolveFqcn($file['content'], $className);
+                $fqcn = $this->resolveFqcn($file['content'], $className, $stmts);
 
                 if ($fqcn !== null && class_exists($fqcn)) {
                     continue;
