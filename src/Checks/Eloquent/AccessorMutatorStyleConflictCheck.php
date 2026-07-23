@@ -5,6 +5,7 @@ namespace SajjadHossain\Doctor\Checks\Eloquent;
 use PhpParser\Node;
 use PhpParser\Node\Expr\StaticCall;
 use PhpParser\Node\Stmt\ClassMethod;
+use PhpParser\Node\Stmt\Return_;
 use PhpParser\NodeVisitorAbstract;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
@@ -46,7 +47,8 @@ class AccessorMutatorStyleConflictCheck extends PhpAstCheck
                 continue;
             }
 
-            $fqcn = $this->resolveFqcn($file['content'], $this->extractShortClassName($file['content']), $stmts);
+            // Resolve FQCN for reflection
+            $fqcn = $this->resolveFqcn($file['content'], $this->extractShortClassName($file['content']));
             if ($fqcn === null || !class_exists($fqcn)) {
                 continue;
             }
@@ -60,6 +62,7 @@ class AccessorMutatorStyleConflictCheck extends PhpAstCheck
                 continue;
             }
 
+            // Old-style accessors via reflection
             $oldAccessors = [];
             foreach ($reflection->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
                 if ($method->getDeclaringClass()->getName() !== $fqcn) {
@@ -75,16 +78,14 @@ class AccessorMutatorStyleConflictCheck extends PhpAstCheck
                 }
             }
 
+            // New-style accessors via AST
+            $newAccessors = [];
             $visitor = new class extends NodeVisitorAbstract {
                 public array $makeCalls = [];
-                private ?string $currentMethod = null;
 
                 public function enterNode(Node $node): void
                 {
-                    if ($node instanceof ClassMethod && $node->name instanceof Node\Identifier) {
-                        $this->currentMethod = $node->name->toString();
-                    }
-
+                    // Find Attribute::make(...) and track the enclosing method
                     if ($node instanceof StaticCall
                         && $node->class instanceof Node\Name
                         && substr($node->class->toString(), strrpos($node->class->toString(), '\\') ?: 0) === 'Attribute'
@@ -98,8 +99,8 @@ class AccessorMutatorStyleConflictCheck extends PhpAstCheck
                                 if ($arg->name->toString() === 'set') { $flags .= 's'; }
                             }
                         }
-                        if ($flags !== '' && $this->currentMethod !== null) {
-                            $this->makeCalls[] = ['flags' => $flags, 'method' => $this->currentMethod];
+                        if ($flags !== '') {
+                            $this->makeCalls[] = ['flags' => $flags, 'line' => $node->getLine()];
                         }
                     }
                 }
@@ -107,10 +108,10 @@ class AccessorMutatorStyleConflictCheck extends PhpAstCheck
 
             $this->traverse($stmts, $visitor);
 
-            $newAccessors = [];
+            // Map Attribute::make calls to the enclosing method (attribute name)
             foreach ($visitor->makeCalls as $call) {
-                if (preg_match('/^(get|set)?(\w+)(Attribute)?$/', $call['method'], $m)) {
-                    $attrName = lcfirst($m[2]);
+                $attrName = $this->findEnclosingMethod($stmts, $call['line']);
+                if ($attrName !== null) {
                     $newAccessors[$attrName] = ($newAccessors[$attrName] ?? '') . $call['flags'];
                 }
             }
@@ -158,5 +159,40 @@ class AccessorMutatorStyleConflictCheck extends PhpAstCheck
             return $m[1];
         }
         return '';
+    }
+
+    private function findEnclosingMethod(array $stmts, int $targetLine): ?string
+    {
+        $found = [null];
+        $visitor = new class($targetLine, $found) extends NodeVisitorAbstract {
+            private int $targetLine;
+            private array $found;
+            private ?string $currentMethod = null;
+
+            public function __construct(int $targetLine, array &$found)
+            {
+                $this->targetLine = $targetLine;
+                $this->found = &$found;
+            }
+
+            public function enterNode(Node $node): void
+            {
+                if ($node instanceof ClassMethod) {
+                    if ($node->name instanceof Node\Identifier) {
+                        $attrMethod = $node->name->toString();
+                        if (preg_match('/^(get|set)?(\w+)(Attribute)?$/', $attrMethod)) {
+                            $this->currentMethod = $attrMethod;
+                        }
+                    }
+                }
+                if ($node->getLine() === $this->targetLine && $this->currentMethod !== null) {
+                    $this->found[0] = $this->currentMethod;
+                }
+            }
+        };
+
+        $this->traverse($stmts, $visitor);
+
+        return $found[0];
     }
 }

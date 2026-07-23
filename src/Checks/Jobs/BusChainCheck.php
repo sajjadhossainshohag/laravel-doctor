@@ -96,7 +96,7 @@ class BusChainCheck extends PhpAstCheck
             $this->traverse($stmts, $visitor);
 
             foreach ($visitor->chains as $chainInfo) {
-                $resolved = $this->resolveFqcn($file['content'], $chainInfo['class'], $stmts);
+                $resolved = $this->resolveFqcn($file['content'], $chainInfo['class']);
                 $checkClass = $resolved ?? $chainInfo['class'];
 
                 if (!class_exists($checkClass)) {

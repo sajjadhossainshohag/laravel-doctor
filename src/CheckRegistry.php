@@ -13,13 +13,6 @@ class CheckRegistry
         }
     }
 
-    public function registerMany(array $checkClasses): void
-    {
-        foreach ($checkClasses as $class) {
-            $this->register($class);
-        }
-    }
-
     public function all(): array
     {
         return $this->checks;

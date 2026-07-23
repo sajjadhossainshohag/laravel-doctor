@@ -3,12 +3,12 @@
 namespace SajjadHossain\Doctor\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use SajjadHossain\Doctor\CheckRegistry;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
 use SajjadHossain\Doctor\Output\ConsoleRenderer;
 use SajjadHossain\Doctor\ParallelRunner;
-use SajjadHossain\Doctor\ScanResultCache;
 
 class ScanCommand extends Command
 {
@@ -23,7 +23,7 @@ class ScanCommand extends Command
 
     protected $description = 'Static analysis — no DB, no HTTP required';
 
-    public function handle(CheckRegistry $registry, ConsoleRenderer $renderer, ScanResultCache $cache): int
+    public function handle(CheckRegistry $registry, ConsoleRenderer $renderer): int
     {
         $checkClasses = $registry->all();
         $only = $this->option('only');
@@ -52,6 +52,9 @@ class ScanCommand extends Command
             $grouped[$check->category()][] = $check;
         }
 
+        $cacheStore = config('doctor.cache.store', 'file');
+        $cacheTtl = config('doctor.cache.ttl', 3600);
+
         $results = [];
         $overallStart = microtime(true);
 
@@ -66,7 +69,7 @@ class ScanCommand extends Command
 
             foreach ($grouped as $category => $categoryChecks) {
                 if (!$noCache) {
-                    $cached = $cache->get($category);
+                    $cached = Cache::store($cacheStore)->get("doctor_scan_{$category}");
                     if ($cached !== null) {
                         $results = array_merge($results, $cached);
                         continue;
@@ -95,7 +98,7 @@ class ScanCommand extends Command
                     $byCategory[$r->category][] = $r;
                 }
                 foreach ($byCategory as $cat => $catResults) {
-                    $cache->put($cat, $catResults);
+                    Cache::store($cacheStore)->put("doctor_scan_{$cat}", $catResults, $cacheTtl);
                 }
             }
 
@@ -108,7 +111,11 @@ class ScanCommand extends Command
             $checkIndex = 0;
 
             foreach ($grouped as $category => $categoryChecks) {
-                $cachedResults = $noCache ? null : $cache->get($category);
+                $cachedResults = null;
+
+                if (!$noCache) {
+                    $cachedResults = Cache::store($cacheStore)->get("doctor_scan_{$category}");
+                }
 
                 if ($cachedResults !== null) {
                     foreach ($cachedResults as $result) {
@@ -142,7 +149,7 @@ class ScanCommand extends Command
                 }
 
                 if (!$noCache) {
-                    $cache->put($category, $freshResults);
+                    Cache::store($cacheStore)->put("doctor_scan_{$category}", $freshResults, $cacheTtl);
                 }
 
                 $results = array_merge($results, $freshResults);

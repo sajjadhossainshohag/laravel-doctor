@@ -80,7 +80,7 @@ class MissingPolicyClassCheck extends PhpAstCheck
 
             foreach ($visitor->policies as $policyInfo) {
                 $policyClass = $policyInfo['policy'];
-                $resolved = $this->resolveFqcn($file['content'], $policyClass, $stmts);
+                $resolved = $this->resolveFqcn($file['content'], $policyClass);
 
                 if ($resolved !== null && class_exists($resolved)) {
                     continue;
