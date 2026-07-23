@@ -23,6 +23,8 @@ jobs:
 
         exclude:
           - php: 8.1
+            laravel: { version: 11, testbench: 9 }
+          - php: 8.1
             laravel: { version: 12, testbench: 10 }
           - php: 8.1
             laravel: { version: 13, testbench: 11 }
