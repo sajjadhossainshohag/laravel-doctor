@@ -7,7 +7,7 @@ use SajjadHossain\Doctor\DTOs\CheckResult;
 
 class ConsoleRenderer
 {
-    public function render(OutputStyle $output, array $results, float $duration = 0, bool $verbose = false): void
+    public function render(OutputStyle $output, array $results, float $duration = 0): void
     {
         $passed = 0;
         $failed = 0;

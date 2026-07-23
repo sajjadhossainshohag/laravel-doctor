@@ -4,9 +4,11 @@ namespace SajjadHossain\Doctor\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
+use Laravel\AgentDetector\AgentDetector;
 use SajjadHossain\Doctor\CheckRegistry;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
+use SajjadHossain\Doctor\Output\AgentRenderer;
 use SajjadHossain\Doctor\Output\ConsoleRenderer;
 use SajjadHossain\Doctor\ParallelRunner;
 
@@ -16,6 +18,7 @@ class ScanCommand extends Command
         {--only= : Comma-separated check categories to run}
         {--json : Output structured JSON}
         {--html : Output HTML report}
+        {--format= : Output format (agent)}
         {--fail-on= : Exit non-zero if issues at this severity exist}
         {--no-cache : Skip cached results}
         {--parallel : Distribute checks across parallel subprocesses}
@@ -44,6 +47,8 @@ class ScanCommand extends Command
             return 0;
         }
 
+        $isAgent = $this->option('format') === 'agent' || AgentDetector::detect()->isAgent;
+
         $total = count($instances);
         $noCache = $this->option('no-cache');
 
@@ -58,12 +63,19 @@ class ScanCommand extends Command
         $results = [];
         $overallStart = microtime(true);
 
+        if (! $isAgent) {
+            $this->newLine();
+            $this->line("  <fg=cyan>Running {$total} checks...</>");
+            $this->newLine();
+        }
+
         if ($this->option('parallel')) {
             $workerCount = $this->option('workers') ? (int) $this->option('workers') : null;
 
-            $this->newLine();
-            $this->line("  <fg=cyan>Spawning parallel workers...</>");
-            $this->newLine();
+            if (! $isAgent) {
+                $this->line("  <fg=cyan>Spawning parallel workers...</>");
+                $this->newLine();
+            }
 
             $uncachedAll = [];
 
@@ -82,7 +94,11 @@ class ScanCommand extends Command
 
             $runner = new ParallelRunner($workerCount);
 
-            $workerResults = $runner->run($uncachedAll, function (string $event, int $idx, string $info, bool $success): void {
+            $workerResults = $runner->run($uncachedAll, function (string $event, int $idx, string $info, bool $success) use ($isAgent): void {
+                if ($isAgent) {
+                    return;
+                }
+
                 match ($event) {
                     'spawn' => $this->line("  Worker " . ($idx + 1) . ": {$info}... " . ($success ? '<fg=green>spawned</>' : '<fg=red>failed</>')),
                     'done' => $this->line("  <fg=gray>Worker " . ($idx + 1) . " completed:</> {$info}"),
@@ -102,12 +118,10 @@ class ScanCommand extends Command
                 }
             }
 
-            $this->newLine();
+            if (! $isAgent) {
+                $this->newLine();
+            }
         } else {
-            $this->newLine();
-            $this->line("  <fg=cyan>Running {$total} checks...</>");
-            $this->newLine();
-
             $checkIndex = 0;
 
             foreach ($grouped as $category => $categoryChecks) {
@@ -121,10 +135,13 @@ class ScanCommand extends Command
                     foreach ($cachedResults as $result) {
                         $checkIndex++;
                         $results[] = $result;
-                        $this->output->write("  <fg=gray>[{$this->pad($checkIndex, $total)}/{$total}]</> {$result->check}... ");
-                        $icon = $result->passed ? '✓' : '✗';
-                        $color = $result->passed ? 'green' : ($result->severity === Severity::Error ? 'red' : 'yellow');
-                        $this->output->writeln("<fg={$color}>{$icon}</> <fg=gray>cached</>");
+
+                        if (! $isAgent) {
+                            $this->output->write("  <fg=gray>[{$this->pad($checkIndex, $total)}/{$total}]</> {$result->check}... ");
+                            $icon = $result->passed ? '✓' : '✗';
+                            $color = $result->passed ? 'green' : ($result->severity === Severity::Error ? 'red' : 'yellow');
+                            $this->output->writeln("<fg={$color}>{$icon}</> <fg=gray>cached</>");
+                        }
                     }
 
                     continue;
@@ -135,17 +152,22 @@ class ScanCommand extends Command
                 foreach ($categoryChecks as $check) {
                     $checkIndex++;
                     $name = $check->name();
-                    $this->output->write("  <fg=gray>[{$this->pad($checkIndex, $total)}/{$total}]</> {$name}... ");
+
+                    if (! $isAgent) {
+                        $this->output->write("  <fg=gray>[{$this->pad($checkIndex, $total)}/{$total}]</> {$name}... ");
+                    }
 
                     $checkStart = microtime(true);
                     $result = $check->run();
                     $checkDuration = (microtime(true) - $checkStart) * 1000;
                     $freshResults[] = $result;
 
-                    $icon = $result->passed ? '✓' : '✗';
-                    $color = $result->passed ? 'green' : ($result->severity === Severity::Error ? 'red' : 'yellow');
-                    $ms = number_format($checkDuration, 0);
-                    $this->output->writeln("<fg={$color}>{$icon}</> <fg=gray>{$ms}ms</>");
+                    if (! $isAgent) {
+                        $icon = $result->passed ? '✓' : '✗';
+                        $color = $result->passed ? 'green' : ($result->severity === Severity::Error ? 'red' : 'yellow');
+                        $ms = number_format($checkDuration, 0);
+                        $this->output->writeln("<fg={$color}>{$icon}</> <fg=gray>{$ms}ms</>");
+                    }
                 }
 
                 if (!$noCache) {
@@ -155,10 +177,18 @@ class ScanCommand extends Command
                 $results = array_merge($results, $freshResults);
             }
 
-            $this->newLine();
+            if (! $isAgent) {
+                $this->newLine();
+            }
         }
 
         $duration = (microtime(true) - $overallStart) * 1000;
+
+        if ($isAgent) {
+            $this->line((new AgentRenderer())->render($results));
+
+            return $this->failOnExitCode($results);
+        }
 
         if ($this->option('json')) {
             $this->line((new \SajjadHossain\Doctor\Output\JsonRenderer())->render($results));
@@ -172,7 +202,7 @@ class ScanCommand extends Command
             return $this->failOnExitCode($results);
         }
 
-        $renderer->render($this->output, $results, $duration, $this->option('verbose'));
+        $renderer->render($this->output, $results, $duration);
 
         return $this->failOnExitCode($results);
     }

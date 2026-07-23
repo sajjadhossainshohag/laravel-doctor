@@ -42,7 +42,7 @@ php artisan doctor:scan
 | `--no-cache` | Skip cached results |
 | `--parallel` | Distribute checks across parallel subprocesses |
 | `--workers=N` | Number of parallel workers (auto-detected from CPU by default) |
-| `--verbose` | More detailed console output |
+| `--format=agent` | Machine-readable JSON for AI agents (auto-detected in OpenCode/Claude Code) |
 | `--help` | Display help |
 
 ### Examples
@@ -68,6 +68,9 @@ php artisan doctor:scan --parallel
 
 # Run checks in parallel with custom worker count
 php artisan doctor:scan --parallel --workers=8
+
+# Agent-readable output (auto-detected in OpenCode/Claude Code)
+php artisan doctor:scan --format=agent
 ```
 
 ### Cache
