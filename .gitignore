@@ -1,2 +1,6 @@
 vendor
 composer.lock
+.phpunit.result.cache
+8.0/
+.phpunit.result.cache
+8.0/

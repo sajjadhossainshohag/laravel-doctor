@@ -4,7 +4,6 @@ namespace SajjadHossain\Doctor\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
-use Laravel\AgentDetector\AgentDetector;
 use SajjadHossain\Doctor\CheckRegistry;
 use SajjadHossain\Doctor\DTOs\CheckResult;
 use SajjadHossain\Doctor\Enums\Severity;
@@ -49,7 +48,10 @@ class ScanCommand extends Command
             return 0;
         }
 
-        $isAgent = $this->option('format') === 'agent' || AgentDetector::detect()->isAgent;
+        $isAgent = $this->option('format') === 'agent';
+        if (!$isAgent && class_exists(\Laravel\AgentDetector\AgentDetector::class)) {
+            $isAgent = \Laravel\AgentDetector\AgentDetector::detect()->isAgent;
+        }
 
         $total = count($instances);
         $noCache = $this->option('no-cache');
