@@ -94,7 +94,7 @@ class InterfaceBoundToDeletedConcreteCheck extends PhpAstCheck
             $this->traverse($stmts, $visitor);
 
             foreach ($visitor->bindings as $binding) {
-                $resolved = $this->resolveFqcn($file['content'], $binding['concrete']);
+                $resolved = $this->resolveFqcn($file['content'], $binding['concrete'], $stmts);
                 if ($resolved !== null && ! class_exists($resolved)) {
                     $locations[] = [
                         'file' => $file['path'],

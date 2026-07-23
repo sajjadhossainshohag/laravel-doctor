@@ -118,6 +118,7 @@ class WithCountOnUndefinedRelationshipCheck extends PhpAstCheck
             foreach ($visitor->calls as $call) {
                 $modelClass = $this->guessModelClassFromAst(
                     $file['content'],
+                    $stmts,
                     $modelImports,
                     $call['isStatic'],
                     $call['className'] ?? null
@@ -183,12 +184,13 @@ class WithCountOnUndefinedRelationshipCheck extends PhpAstCheck
 
     private function guessModelClassFromAst(
         string $content,
+        array $stmts,
         array $modelImports,
         bool $isStatic,
         ?string $staticClassName
     ): string|array|null {
         if ($isStatic && $staticClassName !== null) {
-            $fqcn = $this->resolveFqcn($content, $staticClassName);
+            $fqcn = $this->resolveFqcn($content, $staticClassName, $stmts);
             if ($fqcn && class_exists($fqcn) && is_subclass_of($fqcn, 'Illuminate\Database\Eloquent\Model')) {
                 return $fqcn;
             }
@@ -198,7 +200,7 @@ class WithCountOnUndefinedRelationshipCheck extends PhpAstCheck
         if (preg_match_all('/\b(\w+)\s*::\s*(?:query|with|where|orderBy|select)\s*\([^)]*\)\s*->\s*withCount\s*\(/', $content, $staticCalls)) {
             $candidates = [];
             foreach ($staticCalls[1] as $shortName) {
-                $fqcn = $this->resolveFqcn($content, $shortName);
+                $fqcn = $this->resolveFqcn($content, $shortName, $stmts);
                 if ($fqcn && class_exists($fqcn) && is_subclass_of($fqcn, 'Illuminate\Database\Eloquent\Model')) {
                     $candidates[] = $fqcn;
                 }
