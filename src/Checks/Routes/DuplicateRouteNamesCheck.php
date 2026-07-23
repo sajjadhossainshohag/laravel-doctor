@@ -27,24 +27,28 @@ class DuplicateRouteNamesCheck implements HealthCheck
     public function run(): CheckResult
     {
         $routes = Route::getRoutes();
-        $names = [];
-        $locations = [];
+
+        // Group every named route by its name so we capture ALL routes
+        // sharing a name, not just the ones after the first.
+        $byName = [];
 
         foreach ($routes as $route) {
             $name = $route->getName();
-            if ($name !== null) {
-                if (isset($names[$name])) {
-                    $locations[] = [
-                        'name' => $name,
-                        'uri' => $route->uri(),
-                        'method' => implode('|', $route->methods()),
-                    ];
-                }
-                $names[$name] = true;
+
+            if ($name === null) {
+                continue;
             }
+
+            $byName[$name][] = [
+                'name' => $name,
+                'uri' => $route->uri(),
+                'method' => implode('|', $route->methods()),
+            ];
         }
 
-        if (empty($locations)) {
+        $duplicateGroups = array_filter($byName, fn (array $entries) => count($entries) > 1);
+
+        if (empty($duplicateGroups)) {
             return new CheckResult(
                 check: $this->name(),
                 category: $this->category(),
@@ -54,14 +58,61 @@ class DuplicateRouteNamesCheck implements HealthCheck
             );
         }
 
+        // Split into "trailing-dot" groups (a ->name('prefix.') group whose
+        // child routes never called ->name(), so they all collapse onto the
+        // literal prefix) vs genuine accidental duplicates.
+        $trailingDotGroups = [];
+        $genuineDuplicates = [];
+
+        foreach ($duplicateGroups as $name => $entries) {
+            if (str_ends_with($name, '.')) {
+                $trailingDotGroups[$name] = $entries;
+            } else {
+                $genuineDuplicates[$name] = $entries;
+            }
+        }
+
+        $locations = [];
+        $messageParts = [];
+
+        foreach ($trailingDotGroups as $name => $entries) {
+            $count = count($entries);
+            $messageParts[] = "Group name prefix \"{$name}\" has {$count} routes with no per-route name — did you forget ->name() inside the group?";
+
+            foreach ($entries as $entry) {
+                $locations[] = $entry + ['issue' => 'missing_child_name'];
+            }
+        }
+
+        foreach ($genuineDuplicates as $name => $entries) {
+            $count = count($entries);
+            $messageParts[] = "Route name \"{$name}\" is reused by {$count} routes.";
+
+            foreach ($entries as $entry) {
+                $locations[] = $entry + ['issue' => 'duplicate_name'];
+            }
+        }
+
+        $suggestionParts = [];
+
+        if (! empty($trailingDotGroups)) {
+            $suggestionParts[] = 'For groups with a trailing-dot name prefix (e.g. ->name(\'merchant.\')), '
+                . 'add an explicit ->name(\'x\') to every route inside the group so it becomes '
+                . '\'merchant.x\' instead of colliding on the literal prefix.';
+        }
+
+        if (! empty($genuineDuplicates)) {
+            $suggestionParts[] = 'For reused route names, rename one of each colliding pair so names are unique.';
+        }
+
         return new CheckResult(
             check: $this->name(),
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations) . ' duplicate route name(s) detected.',
+            message: implode(' ', $messageParts),
             locations: $locations,
-            suggestion: 'Each route name must be unique. Use unique names for named routes.',
+            suggestion: implode(' ', $suggestionParts),
         );
     }
 }
