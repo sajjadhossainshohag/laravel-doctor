@@ -10,6 +10,7 @@ class MissingEnvKeysCheck implements HealthCheck
 {
     private ?string $envFilePath = null;
     private array $configPaths = [];
+    private array $allowlistedKeys = [];
 
     public function withEnvFile(string $path): static
     {
@@ -20,6 +21,12 @@ class MissingEnvKeysCheck implements HealthCheck
     public function withConfigPaths(array $paths): static
     {
         $this->configPaths = $paths;
+        return $this;
+    }
+
+    public function withAllowlistedKeys(array $keys): static
+    {
+        $this->allowlistedKeys = $keys;
         return $this;
     }
 
@@ -44,12 +51,18 @@ class MissingEnvKeysCheck implements HealthCheck
         // whether the call is missing-friendly.
         [$keysWithoutDefault, $keysWithDefault] = $this->findEnvCallsInConfig();
         $envKeys = $this->parseEnvFile($this->envFilePath ?? base_path('.env'));
+        $allowlisted = $this->allowlistedKeys ?: config('doctor.allowlisted_env_keys', []);
         $locations = [];
 
         // Only flag env() calls that have NO default — those are the ones
         // that will silently produce null and break the application when
-        // the key is missing from .env.
+        // the key is missing from .env. Skip keys in the allowlist since
+        // they are known-optional Laravel stock config references.
         foreach ($keysWithoutDefault as $key) {
+            if (in_array($key, $allowlisted, true)) {
+                continue;
+            }
+
             if (!isset($envKeys[$key])) {
                 $locations[] = [
                     'key' => $key,
