@@ -1,3 +1,7 @@
+<p align="center">
+    <img src="art/laravel-doctor-banner.png" alt="Laravel Doctor" width="100%">
+</p>
+
 # Laravel Doctor
 
 **Code Health Checker for Laravel** — catch broken routes, missing views, schema mismatches, and runtime errors before deployment.
