@@ -11,6 +11,8 @@ use SajjadHossain\Doctor\Enums\Severity;
 use SajjadHossain\Doctor\Output\AgentRenderer;
 use SajjadHossain\Doctor\Output\ConsoleRenderer;
 use SajjadHossain\Doctor\ParallelRunner;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 
 class ScanCommand extends Command
 {
@@ -81,7 +83,7 @@ class ScanCommand extends Command
 
             foreach ($grouped as $category => $categoryChecks) {
                 if (!$noCache) {
-                    $cached = Cache::store($cacheStore)->get("doctor_scan_{$category}");
+                    $cached = Cache::store($cacheStore)->get($this->computeCacheKey($category));
                     if ($cached !== null) {
                         $results = array_merge($results, $cached);
                         continue;
@@ -114,7 +116,7 @@ class ScanCommand extends Command
                     $byCategory[$r->category][] = $r;
                 }
                 foreach ($byCategory as $cat => $catResults) {
-                    Cache::store($cacheStore)->put("doctor_scan_{$cat}", $catResults, $cacheTtl);
+                    Cache::store($cacheStore)->put($this->computeCacheKey($cat), $catResults, $cacheTtl);
                 }
             }
 
@@ -128,7 +130,7 @@ class ScanCommand extends Command
                 $cachedResults = null;
 
                 if (!$noCache) {
-                    $cachedResults = Cache::store($cacheStore)->get("doctor_scan_{$category}");
+                    $cachedResults = Cache::store($cacheStore)->get($this->computeCacheKey($category));
                 }
 
                 if ($cachedResults !== null) {
@@ -171,7 +173,7 @@ class ScanCommand extends Command
                 }
 
                 if (!$noCache) {
-                    Cache::store($cacheStore)->put("doctor_scan_{$category}", $freshResults, $cacheTtl);
+                    Cache::store($cacheStore)->put($this->computeCacheKey($category), $freshResults, $cacheTtl);
                 }
 
                 $results = array_merge($results, $freshResults);
@@ -205,6 +207,57 @@ class ScanCommand extends Command
         $renderer->render($this->output, $results, $duration);
 
         return $this->failOnExitCode($results);
+    }
+
+    private static array $cacheSaltCache = [];
+
+    private function computeCacheKey(string $category): string
+    {
+        return "doctor_scan_{$category}_" . $this->resolveCacheSalt($category);
+    }
+
+    private function resolveCacheSalt(string $category): string
+    {
+        if ($category === 'env') {
+            if (isset(self::$cacheSaltCache['env'])) {
+                return self::$cacheSaltCache['env'];
+            }
+
+            return self::$cacheSaltCache['env'] = $this->hashFileMtimes([
+                base_path('.env'),
+                config_path(),
+            ]);
+        }
+
+        if (! isset(self::$cacheSaltCache['_general'])) {
+            self::$cacheSaltCache['_general'] = $this->hashFileMtimes(
+                array_merge(config('doctor.scan_paths', [app_path(), resource_path('views')]), [config_path()])
+            );
+        }
+
+        return self::$cacheSaltCache['_general'];
+    }
+
+    private function hashFileMtimes(array $paths): string
+    {
+        $mtimes = [];
+
+        foreach ($paths as $path) {
+            if (is_file($path)) {
+                $mtimes[$path] = filemtime($path);
+            } elseif (is_dir($path)) {
+                $files = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator($path, RecursiveDirectoryIterator::SKIP_DOTS)
+                );
+                foreach ($files as $file) {
+                    if ($file->isFile()) {
+                        $mtimes[$file->getRealPath()] = $file->getMTime();
+                    }
+                }
+            }
+        }
+
+        return md5(serialize($mtimes));
     }
 
     private function pad(int $current, int $total): string
