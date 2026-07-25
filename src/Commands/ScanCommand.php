@@ -67,19 +67,8 @@ class ScanCommand extends Command
         $results = [];
         $overallStart = microtime(true);
 
-        if (! $isAgent) {
-            $this->newLine();
-            $this->line("  <fg=cyan>Running {$total} checks...</>");
-            $this->newLine();
-        }
-
         if ($this->option('parallel')) {
             $workerCount = $this->option('workers') ? (int) $this->option('workers') : null;
-
-            if (! $isAgent) {
-                $this->line("  <fg=cyan>Spawning parallel workers...</>");
-                $this->newLine();
-            }
 
             $uncachedAll = [];
 
@@ -96,32 +85,34 @@ class ScanCommand extends Command
                 }
             }
 
-            if (empty($uncachedAll)) {
-                goto afterParallel;
-            }
-
-            $this->output->write("  <fg=cyan>Running parallel workers...</>");
-
-            $completed = 0;
-            $total = 0;
-
-            $runner = new ParallelRunner($workerCount);
-
-            $workerResults = $runner->run($uncachedAll, function (string $event, int $idx, string $info, bool $success) use ($isAgent): void {
-                if ($isAgent) {
-                    return;
+            if (!empty($uncachedAll)) {
+                if (!$isAgent) {
+                    $this->output->write("  <fg=cyan>Running parallel workers...</>");
                 }
 
-                match ($event) {
-                    'spawn' => $total++,
-                    'done' => $this->output->write("\r  <fg=cyan>Running parallel workers... </>" . (++$completed) . "/{$total} complete"),
-                    'fallback' => $this->output->write("\r  <fg=yellow>Running parallel workers... </>" . (++$completed) . "/{$total} complete (fallback)"),
-                };
-            });
+                $completed = 0;
+                $workerTotal = 0;
 
-            $results = array_merge($results, $workerResults);
+                $runner = new ParallelRunner($workerCount);
 
-            $this->output->writeln("\r  <fg=green>Parallel scan complete. ({$total} worker" . ($total !== 1 ? 's' : '') . ')</>');
+                $workerResults = $runner->run($uncachedAll, function (string $event, int $idx, string $info, bool $success) use ($isAgent, &$completed, &$workerTotal): void {
+                    if ($isAgent) {
+                        return;
+                    }
+
+                    match ($event) {
+                        'spawn' => $workerTotal++,
+                        'done' => $this->output->write("\r  <fg=cyan>Running parallel workers... </>" . (++$completed) . "/{$workerTotal} complete"),
+                        'fallback' => $this->output->write("\r  <fg=yellow>Running parallel workers... </>" . (++$completed) . "/{$workerTotal} complete (fallback)"),
+                    };
+                });
+
+                $results = array_merge($results, $workerResults);
+
+                if (!$isAgent) {
+                    $this->output->writeln("\r  <fg=green>Parallel scan complete. ({$workerTotal} worker" . ($workerTotal !== 1 ? 's' : '') . ')</>');
+                }
+            }
 
             if (!$noCache) {
                 $byCategory = [];
@@ -133,10 +124,16 @@ class ScanCommand extends Command
                 }
             }
 
-            if (! $isAgent) {
+            if (!$isAgent) {
                 $this->newLine();
             }
         } else {
+            if (!$isAgent) {
+                $this->newLine();
+                $this->line("  <fg=cyan>Running {$total} checks...</>");
+                $this->newLine();
+            }
+
             $checkIndex = 0;
 
             foreach ($grouped as $category => $categoryChecks) {
@@ -151,7 +148,7 @@ class ScanCommand extends Command
                         $checkIndex++;
                         $results[] = $result;
 
-                        if (! $isAgent) {
+                        if (!$isAgent) {
                             $this->output->write("  <fg=gray>[{$this->pad($checkIndex, $total)}/{$total}]</> {$result->check}... ");
                             $icon = $result->passed ? '✓' : '✗';
                             $color = $result->passed ? 'green' : ($result->severity === Severity::Error ? 'red' : 'yellow');
@@ -168,7 +165,7 @@ class ScanCommand extends Command
                     $checkIndex++;
                     $name = $check->name();
 
-                    if (! $isAgent) {
+                    if (!$isAgent) {
                         $this->output->write("  <fg=gray>[{$this->pad($checkIndex, $total)}/{$total}]</> {$name}... ");
                     }
 
@@ -177,7 +174,7 @@ class ScanCommand extends Command
                     $checkDuration = (microtime(true) - $checkStart) * 1000;
                     $freshResults[] = $result;
 
-                    if (! $isAgent) {
+                    if (!$isAgent) {
                         $icon = $result->passed ? '✓' : '✗';
                         $color = $result->passed ? 'green' : ($result->severity === Severity::Error ? 'red' : 'yellow');
                         $ms = number_format($checkDuration, 0);
@@ -192,7 +189,7 @@ class ScanCommand extends Command
                 $results = array_merge($results, $freshResults);
             }
 
-            if (! $isAgent) {
+            if (!$isAgent) {
                 $this->newLine();
             }
         }
