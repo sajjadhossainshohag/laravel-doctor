@@ -96,6 +96,15 @@ class ScanCommand extends Command
                 }
             }
 
+            if (empty($uncachedAll)) {
+                goto afterParallel;
+            }
+
+            $this->output->write("  <fg=cyan>Running parallel workers...</>");
+
+            $completed = 0;
+            $total = 0;
+
             $runner = new ParallelRunner($workerCount);
 
             $workerResults = $runner->run($uncachedAll, function (string $event, int $idx, string $info, bool $success) use ($isAgent): void {
@@ -104,13 +113,15 @@ class ScanCommand extends Command
                 }
 
                 match ($event) {
-                    'spawn' => $this->line("  Worker " . ($idx + 1) . ": {$info}... " . ($success ? '<fg=green>spawned</>' : '<fg=red>failed</>')),
-                    'done' => $this->line("  <fg=gray>Worker " . ($idx + 1) . " completed:</> {$info}"),
-                    'fallback' => $this->line("  <fg=yellow>Worker " . ($idx + 1) . " failed, running sequentially: {$info}</>"),
+                    'spawn' => $total++,
+                    'done' => $this->output->write("\r  <fg=cyan>Running parallel workers... </>" . (++$completed) . "/{$total} complete"),
+                    'fallback' => $this->output->write("\r  <fg=yellow>Running parallel workers... </>" . (++$completed) . "/{$total} complete (fallback)"),
                 };
             });
 
             $results = array_merge($results, $workerResults);
+
+            $this->output->writeln("\r  <fg=green>Parallel scan complete. ({$total} worker" . ($total !== 1 ? 's' : '') . ')</>');
 
             if (!$noCache) {
                 $byCategory = [];

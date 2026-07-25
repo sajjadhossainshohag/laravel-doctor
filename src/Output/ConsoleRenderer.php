@@ -4,13 +4,16 @@ namespace SajjadHossain\Doctor\Output;
 
 use Illuminate\Console\OutputStyle;
 use SajjadHossain\Doctor\DTOs\CheckResult;
+use SajjadHossain\Doctor\Enums\Severity;
 
 class ConsoleRenderer
 {
     public function render(OutputStyle $output, array $results, float $duration = 0): void
     {
         $passed = 0;
-        $failed = 0;
+        $errors = 0;
+        $warnings = 0;
+        $infos = 0;
 
         foreach ($results as $result) {
             $status = $result->passed ? '✓' : '✗';
@@ -37,12 +40,27 @@ class ConsoleRenderer
 
             if ($result->passed) {
                 $passed++;
+            } elseif ($result->severity === Severity::Error) {
+                $errors++;
+            } elseif ($result->severity === Severity::Warning) {
+                $warnings++;
             } else {
-                $failed++;
+                $infos++;
             }
         }
 
+        $parts = ["{$passed} passed"];
+        if ($errors > 0) {
+            $parts[] = "{$errors} errors";
+        }
+        if ($warnings > 0) {
+            $parts[] = "{$warnings} warnings";
+        }
+        if ($infos > 0) {
+            $parts[] = "{$infos} info";
+        }
+
         $output->newLine();
-        $output->writeln("  Results: {$passed} passed, {$failed} failed" . ($duration > 0 ? ' (' . number_format($duration / 1000, 2) . 's)' : ''));
+        $output->writeln('  Results: ' . implode(', ', $parts) . ($duration > 0 ? ' (' . number_format($duration / 1000, 2) . 's)' : ''));
     }
 }

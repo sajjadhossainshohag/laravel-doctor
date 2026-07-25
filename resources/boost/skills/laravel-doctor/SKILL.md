@@ -67,7 +67,7 @@ The human-readable console output shows each check as it runs with pass/fail sta
        app/Models/User.php: — $fillable column not found in DB table: `nickname`
      → Add a migration for the missing column [...]
 
-  Results: 48 passed, 2 failed (1.62s)
+  Results: 48 passed, 2 errors (1.62s)
 ```
 
 Each line shows:
