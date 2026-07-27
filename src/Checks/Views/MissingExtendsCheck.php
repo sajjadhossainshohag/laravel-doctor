@@ -44,6 +44,8 @@ class MissingExtendsCheck extends BladeAstCheck
 
     public function run(): CheckResult
     {
+        $this->registerErrorViewNamespace();
+
         $locations = [];
 
         foreach ($this->scanViewFiles() as $file) {
@@ -83,5 +85,21 @@ class MissingExtendsCheck extends BladeAstCheck
             locations: $locations,
             suggestion: 'Create the missing layout or correct the @extends path.',
         );
+    }
+
+    /**
+     * Laravel only registers the `errors::` view namespace lazily, inside
+     * Handler::renderHttpException()->(new RegisterErrorViewPaths)(), which
+     * never runs during `artisan doctor:scan`. Without this, view()->exists()
+     * always reports stock error views (errors::minimal, errors::layout, etc.)
+     * as missing, even when they resolve fine at runtime.
+     */
+    protected function registerErrorViewNamespace(): void
+    {
+        if (! class_exists(\Illuminate\Foundation\Exceptions\RegisterErrorViewPaths::class)) {
+            return;
+        }
+
+        (new \Illuminate\Foundation\Exceptions\RegisterErrorViewPaths)();
     }
 }

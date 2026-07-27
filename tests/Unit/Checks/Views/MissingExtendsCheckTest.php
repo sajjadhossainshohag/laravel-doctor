@@ -58,6 +58,21 @@ class MissingExtendsCheckTest extends TestCase
     }
 
     /** @test */
+    public function it_resolves_framework_error_views_via_auto_registered_namespace(): void
+    {
+        // The 'errors::' namespace is normally registered only when the
+        // exception handler renders an HTTP error page. During CLI scans
+        // it is absent. The check must auto-register it (via
+        // RegisterErrorViewPaths) so that view()->exists('errors::minimal')
+        // returns true, just as it would at runtime.
+        config()->set('view.paths', [__DIR__.'/../../../Fixtures/Views/errors-ns']);
+
+        $result = (new MissingExtendsCheck())->run();
+
+        $this->assertCheckPassed($result, 'errors::minimal should resolve via auto-registered namespace');
+    }
+
+    /** @test */
     public function it_does_not_cross_report_include_as_extends(): void
     {
         // A view with both a valid @extends and a broken @include.
