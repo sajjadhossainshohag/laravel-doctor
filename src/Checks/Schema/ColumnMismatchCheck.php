@@ -10,6 +10,15 @@ use SajjadHossain\Doctor\Enums\Severity;
 
 class ColumnMismatchCheck implements HealthCheck
 {
+    private array $customModels = [];
+
+    public function withModels(array $models): static
+    {
+        $this->customModels = $models;
+
+        return $this;
+    }
+
     public function name(): string
     {
         return 'Column Mismatch (Eloquent vs DB)';
@@ -28,7 +37,9 @@ class ColumnMismatchCheck implements HealthCheck
     public function run(): CheckResult
     {
         $locations = [];
-        $models = $this->discoverModels();
+        $hasMissingTable = false;
+        $hasMissingColumn = false;
+        $models = $this->customModels ?: $this->discoverModels();
 
         foreach ($models as $modelClass) {
             try {
@@ -36,6 +47,7 @@ class ColumnMismatchCheck implements HealthCheck
                 $table = $model->getTable();
 
                 if (!Schema::hasTable($table)) {
+                    $hasMissingTable = true;
                     $locations[] = [
                         'model' => $modelClass,
                         'table' => $table,
@@ -50,6 +62,7 @@ class ColumnMismatchCheck implements HealthCheck
                 $fillable = $model->getFillable();
                 foreach ($fillable as $col) {
                     if (!in_array(strtolower($col), $columns, true)) {
+                        $hasMissingColumn = true;
                         $locations[] = [
                             'model' => $modelClass,
                             'table' => $table,
@@ -76,6 +89,7 @@ class ColumnMismatchCheck implements HealthCheck
                         if (! in_array($colLower, $persistedKeys, true)) {
                             continue;
                         }
+                        $hasMissingColumn = true;
                         $locations[] = [
                             'model' => $modelClass,
                             'table' => $table,
@@ -108,10 +122,48 @@ class ColumnMismatchCheck implements HealthCheck
             category: $this->category(),
             severity: $this->severity(),
             passed: false,
-            message: count($locations) . ' column mismatch(es) detected.',
+            message: $this->buildMessage($locations),
             locations: $locations,
-            suggestion: 'Add a migration for the missing column, remove the field from $fillable, or adjust the cast.',
+            suggestion: $this->buildSuggestion($hasMissingTable, $hasMissingColumn),
         );
+    }
+
+    private function buildMessage(array $locations): string
+    {
+        $parts = [];
+
+        foreach ($locations as $loc) {
+            $issue = $loc['issue'] ?? 'Unknown issue';
+
+            if (!isset($loc['table'])) {
+                $parts[] = "{$loc['model']}: {$issue}";
+            } elseif (isset($loc['column'])) {
+                $parts[] = "Column \"{$loc['column']}\" in table \"{$loc['table']}\": {$issue}";
+            } else {
+                $parts[] = "{$loc['model']}: {$issue}";
+            }
+        }
+
+        return implode('; ', $parts) . '.';
+    }
+
+    private function buildSuggestion(bool $hasMissingTable, bool $hasMissingColumn): string
+    {
+        $parts = [];
+
+        if ($hasMissingTable) {
+            $parts[] = 'Create the missing database table via a new migration.';
+        }
+
+        if ($hasMissingColumn) {
+            $parts[] = 'Add a migration for the missing column, remove the field from $fillable or $casts, or add a missing accessor.';
+        }
+
+        if (empty($parts)) {
+            $parts[] = 'Fix errors preventing model inspection.';
+        }
+
+        return implode(' ', $parts);
     }
 
     /**
