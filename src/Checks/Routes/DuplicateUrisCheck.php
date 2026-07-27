@@ -9,6 +9,15 @@ use SajjadHossain\Doctor\Enums\Severity;
 
 class DuplicateUrisCheck implements HealthCheck
 {
+    private array $customRoutes = [];
+
+    public function withRoutes(array $routes): static
+    {
+        $this->customRoutes = $routes;
+
+        return $this;
+    }
+
     public function name(): string
     {
         return 'Duplicate URIs';
@@ -26,7 +35,7 @@ class DuplicateUrisCheck implements HealthCheck
 
     public function run(): CheckResult
     {
-        $routes = Route::getRoutes();
+        $routes = $this->customRoutes ?: Route::getRoutes()->getRoutes();
         $map = [];
         $locations = [];
 

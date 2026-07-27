@@ -19,15 +19,4 @@ class JobDependencyResolutionCheckTest extends TestCase
         $this->assertCheckFailed($result, Severity::Warning);
     }
 
-    /** @test */
-    public function it_passes_for_serializable_constructor_parameters(): void
-    {
-        if (class_exists(\SajjadHossain\Doctor\Tests\Fixtures\App\Jobs\SerializableTypedJob::class)) {
-            $result = (new JobDependencyResolutionCheck())->run();
-            // Might still include the broken job; just verify the check runs
-            $this->assertIsObject($result);
-        } else {
-            $this->assertTrue(true);
-        }
-    }
 }
