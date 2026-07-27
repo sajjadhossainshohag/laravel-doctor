@@ -15,7 +15,7 @@ Run a single artisan command to scan your entire Laravel codebase for 50+ common
 ## Installation
 
 ```bash
-composer require sajjadhossainshohag/laravel-doctor:^0.2.0 --dev
+composer require sajjadhossainshohag/laravel-doctor --dev
 ```
 
 ## Requirements
